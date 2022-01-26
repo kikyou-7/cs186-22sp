@@ -147,7 +147,8 @@ public class BPlusTree {
 
         // TODO(proj2): implement
 
-        return Optional.empty();
+        return root.get(key) // 根据key去找到结点因为内部结点,叶结点都实现了get,这里会递归去找
+                .getKey(key); // 最后找到叶子结点的时候,再调用getKey返回Optional<RecordId>
     }
 
     /**

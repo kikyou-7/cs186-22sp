@@ -4,6 +4,7 @@ import edu.berkeley.cs186.database.common.Buffer;
 import edu.berkeley.cs186.database.common.Pair;
 import edu.berkeley.cs186.database.concurrency.LockContext;
 import edu.berkeley.cs186.database.databox.DataBox;
+import edu.berkeley.cs186.database.databox.IntDataBox;
 import edu.berkeley.cs186.database.databox.Type;
 import edu.berkeley.cs186.database.memory.BufferManager;
 import edu.berkeley.cs186.database.memory.Page;
@@ -118,29 +119,7 @@ class LeafNode extends BPlusNode {
              rightSibling, treeContext);
     }
 
-    /**
-     * Construct a leaf node that is persisted to page `page`.
-     */
-    private LeafNode(BPlusTreeMetadata metadata, BufferManager bufferManager, Page page,
-                     List<DataBox> keys,
-                     List<RecordId> rids, Optional<Long> rightSibling, LockContext treeContext) {
-        try {
-            assert (keys.size() == rids.size());
-            assert (keys.size() <= 2 * metadata.getOrder());
 
-            this.metadata = metadata;
-            this.bufferManager = bufferManager;
-            this.treeContext = treeContext;
-            this.page = page;
-            this.keys = new ArrayList<>(keys);
-            this.rids = new ArrayList<>(rids);
-            this.rightSibling = rightSibling;
-
-            sync();
-        } finally {
-            page.unpin();
-        }
-    }
 
     // Core API ////////////////////////////////////////////////////////////////
     // See BPlusNode.get.
@@ -148,7 +127,7 @@ class LeafNode extends BPlusNode {
     public LeafNode get(DataBox key) {
         // TODO(proj2): implement
 
-        return null;
+        return this;
     }
 
     // See BPlusNode.getLeftmostLeaf.
@@ -156,7 +135,7 @@ class LeafNode extends BPlusNode {
     public LeafNode getLeftmostLeaf() {
         // TODO(proj2): implement
 
-        return null;
+        return this;
     }
 
     // See BPlusNode.put.
@@ -376,10 +355,48 @@ class LeafNode extends BPlusNode {
         // Note: LeafNode has two constructors. To implement fromBytes be sure to
         // use the constructor that reuses an existing page instead of fetching a
         // brand new one.
+        Page page = bufferManager.fetchPage(treeContext,pageNum);
+        Buffer buffer = page.getBuffer();
 
-        return null;
+        byte nodeType = buffer.get();
+        assert(nodeType == (byte) 1);
+
+        ArrayList<DataBox> keys = new ArrayList<>();
+        ArrayList<RecordId> recordIds = new ArrayList<>();
+        long siblingTemp = buffer.getLong();
+        int numPairs = buffer.getInt();
+        Optional<Long> sibling = Optional.ofNullable(siblingTemp == Long.BYTES ? null : siblingTemp);
+        for (int i = 0; i < numPairs; i++) {
+            keys.add(DataBox.fromBytes(buffer,metadata.getKeySchema()));
+            recordIds.add(RecordId.fromBytes(buffer));
+        }
+
+         return new LeafNode(metadata,bufferManager,page, keys,recordIds,sibling,treeContext);
+
     }
+    /**
+     * Construct a leaf node that is persisted to page `page`.
+     */
+    private LeafNode(BPlusTreeMetadata metadata, BufferManager bufferManager, Page page,
+                     List<DataBox> keys,
+                     List<RecordId> rids, Optional<Long> rightSibling, LockContext treeContext) {
+        try {
+            assert (keys.size() == rids.size());
+            assert (keys.size() <= 2 * metadata.getOrder());
 
+            this.metadata = metadata;
+            this.bufferManager = bufferManager;
+            this.treeContext = treeContext;
+            this.page = page;
+            this.keys = new ArrayList<>(keys);
+            this.rids = new ArrayList<>(rids);
+            this.rightSibling = rightSibling;
+
+            sync();
+        } finally {
+            page.unpin();
+        }
+    }
     // Builtins ////////////////////////////////////////////////////////////////
     @Override
     public boolean equals(Object o) {
