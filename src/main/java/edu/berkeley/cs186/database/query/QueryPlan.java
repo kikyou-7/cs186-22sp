@@ -195,6 +195,7 @@ public class QueryPlan {
      *   INNER JOIN rightTable ON leftTable.leftColumn = rightTable.rightColumn
      *   INNER JOIN table2 ON table2.some_id = table1.some_id
      */
+    //只支持相等连接
     private class JoinPredicate {
         String leftTable;
         String leftColumn;
@@ -514,6 +515,7 @@ public class QueryPlan {
      * @return a list of indices of eligible selection predicates in
      * this.selectPredicates
      */
+    //返回的列 同时具有索引 && selectPredicate
     private List<Integer> getEligibleIndexColumns(String table) {
         List<Integer> result = new ArrayList<>();
         for (int i = 0; i < this.selectPredicates.size(); i++) {
@@ -521,6 +523,7 @@ public class QueryPlan {
             // ignore if the selection predicate is for a different table
             if (!p.tableName.equals(table)) continue;
             boolean indexExists = this.transaction.indexExists(table, p.column);
+            //如果是不等号的话，用索引遍历没有意义 选择度==1
             boolean canScan = p.operator != PredicateOperator.NOT_EQUALS;
             if (indexExists && canScan) result.add(i);
         }
@@ -541,6 +544,7 @@ public class QueryPlan {
      * @return a new query operator after select predicates have been applied
      */
     private QueryOperator addEligibleSelections(QueryOperator source, int except) {
+
         for (int i = 0; i < this.selectPredicates.size(); i++) {
             if (i == except) continue;
             SelectPredicate curr = this.selectPredicates.get(i);
@@ -573,10 +577,33 @@ public class QueryPlan {
      * nested within any possible pushed down select operators. Ties for the
      * minimum cost operator can be broken arbitrarily.
      */
-    public QueryOperator minCostSingleAccess(String table) {
-        QueryOperator minOp = new SequentialScanOperator(this.transaction, table);
 
+    //1、SequentialScan
+    //2. IndexScan  我们需要遍历每个select predicate 找到只与本表某列相关的 并且在此列上建了索引的
+    public QueryOperator minCostSingleAccess(String table) {
         // TODO(proj3_part2): implement
+        //文件遍历所需的IO就是文件的大小
+        QueryOperator minOp = new SequentialScanOperator(this.transaction, table);
+        int minIOCost = minOp.estimateIOCost();
+
+        //先得到满足 所在列具有索引且可通过索引遍历的 select predicates
+        List<Integer> colPredicateIndex = getEligibleIndexColumns(table);
+        //colPredicateIndex 中的每个select predicates 所在列都有一个索引
+        int except = -1;//被选择的select predicate
+        for (int idx : colPredicateIndex) {
+            SelectPredicate p = this.selectPredicates.get(idx);
+            QueryOperator tempMinOp = new IndexScanOperator(transaction, table, p.column,
+                    p.operator, p.value);
+            int tempIOCost = tempMinOp.estimateIOCost();
+            if (tempIOCost < minIOCost) {
+                minIOCost = tempIOCost;
+                minOp = tempMinOp;
+                except = idx;
+            }
+        }
+        //根据启发式搜索 we need to push down all select predicates
+        //(index所在列不需要 因为选出来的records已经是满足的
+        minOp = this.addEligibleSelections(minOp, except);
         return minOp;
     }
 
@@ -629,7 +656,6 @@ public class QueryPlan {
     public Map<Set<String>, QueryOperator> minCostJoins(
             Map<Set<String>, QueryOperator> prevMap,
             Map<Set<String>, QueryOperator> pass1Map) {
-        Map<Set<String>, QueryOperator> result = new HashMap<>();
         // TODO(proj3_part2): implement
         // We provide a basic description of the logic you have to implement:
         // For each set of tables in prevMap
@@ -646,6 +672,46 @@ public class QueryPlan {
         //      calculate the cheapest join with the new table (the one you
         //      fetched an operator for from pass1Map) and the previously joined
         //      tables. Then, update the result map if needed.
+        Map<Set<String>, QueryOperator> result = new HashMap<>();
+        for (Set<String> tables : prevMap.keySet()) {
+            for (JoinPredicate join : joinPredicates) {
+                String leftTableName = join.leftTable, rightTableName = join.rightTable;
+                String leftCol = join.leftColumn, rightCol = join.rightColumn;
+                if (tables.contains(leftTableName) && tables.contains(rightTableName)) {
+                    continue;
+                }
+                if (tables.contains(leftTableName) || tables.contains(rightTableName)) {
+                    Set<String> newTables = new HashSet<>();//pass1 对应的table
+                    QueryOperator tempOP = null;
+                    if (tables.contains(leftTableName)) {
+                        newTables.add(rightTableName);
+                        tempOP = minCostJoinType(prevMap.get(tables),
+                                pass1Map.get(newTables), leftCol, rightCol);
+                    }
+                    else {
+                        newTables.add(leftTableName);
+                        //注意 左深树  prevMap的结果必须在左边!!
+                        //debug 一晚上未果的一个地方
+                        tempOP = minCostJoinType(prevMap.get(tables),
+                                pass1Map.get(newTables), rightCol, leftCol);
+                    }
+                    //把pre状态也加上 得到新状态
+                    newTables.addAll(tables);
+                    //如果之前dp表没有存过newTables这个状态 更新进dp表
+                    if (!result.containsKey(newTables)) {
+                        result.put(newTables, tempOP);
+                    }
+                    //如果存过 那么需要比较大小 (例如 从 1 2 join 3 /  1 3 join 2 / 2 3 join 1取最优解)
+                    else {
+                        int cost = result.get(newTables).estimateIOCost();
+                        int newCost = tempOP.estimateIOCost();
+                        if (cost > newCost) {
+                            result.put(newTables, tempOP);
+                        }
+                    }
+                }
+            }
+        }
         return result;
     }
 
@@ -658,13 +724,20 @@ public class QueryPlan {
      *
      * @return a QueryOperator in the given mapping
      */
+    //每对 (String,OP) 代表把这些tables连接起来最小的IO操作
+    //返回map中 最小IO操作的OP
+    //用于dp结束后 找到join所有表的最小值
+    //最终结果dp表里只有一个元素 cnt==1
     private QueryOperator minCostOperator(Map<Set<String>, QueryOperator> map) {
         if (map.size() == 0) throw new IllegalArgumentException(
                 "Can't find min cost operator over empty map"
         );
         QueryOperator minOp = null;
         int minCost = Integer.MAX_VALUE;
+//        int cnt = 0;
         for (Set<String> tables : map.keySet()) {
+//            cnt++;
+//            System.out.println("cnt = " + cnt);
             QueryOperator currOp = map.get(tables);
             int currCost = currOp.estimateIOCost();
             if (currCost < minCost) {
@@ -695,7 +768,24 @@ public class QueryPlan {
         // Set the final operator to the lowest cost operator from the last
         // pass, add group by, project, sort and limit operators, and return an
         // iterator over the final operator.
-        return this.executeNaive(); // TODO(proj3_part2): Replace this!
+        Map<Set<String>,QueryOperator> dp = new HashMap<Set<String>,QueryOperator>();
+        for (String table : this.tableNames) {
+            Set<String> tempSet = new HashSet<>();
+            tempSet.add(table);
+            dp.put(tempSet, minCostSingleAccess(table));
+        }
+        //dp[i] join i个表的代节 状压 Set表示是哪i个表
+        Map<Set<String>, QueryOperator> singleAccess = new HashMap<Set<String>, QueryOperator>(dp);
+        for (int i = 2; i <= tableNames.size(); i++) {
+            dp = minCostJoins(dp, singleAccess);
+        }
+    //    System.out.println("final = " + dp.toString());
+        this.finalOperator = minCostOperator(dp);
+        addGroupBy();
+        addProject();
+        addSort();
+        addLimit();
+        return this.finalOperator.iterator();
     }
 
     // EXECUTE NAIVE ///////////////////////////////////////////////////////////

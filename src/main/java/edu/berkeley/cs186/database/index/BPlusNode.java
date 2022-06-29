@@ -14,6 +14,7 @@ import java.util.Optional;
 /**
  * An inner node or a leaf node. See InnerNode and LeafNode for more
  * information.
+ * 一个抽象类
  */
 abstract class BPlusNode {
     // Core API ////////////////////////////////////////////////////////////////
@@ -21,6 +22,7 @@ abstract class BPlusNode {
      * n.get(k) returns the leaf node on which k may reside when queried from n.
      * For example, consider the following B+ tree (for brevity, only keys are
      * shown; record ids are omitted).
+     * get  返回叶子节点
      *
      *                               inner
      *                               +----+----+----+----+
@@ -55,7 +57,8 @@ abstract class BPlusNode {
     /**
      * n.put(k, r) inserts the pair (k, r) into the subtree rooted by n. There
      * are two cases to consider:
-     *
+     *插入
+     * 如果插入不导致满，  返回empty（）
      *   Case 1: If inserting the pair (k, r) does NOT cause n to overflow, then
      *           Optional.empty() is returned.
      *   Case 2: If inserting the pair (k, r) does cause the node n to overflow,

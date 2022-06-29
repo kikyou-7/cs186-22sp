@@ -7,9 +7,10 @@ import edu.berkeley.cs186.database.table.Record;
 /** Metadata about a B+ tree. */
 public class BPlusTreeMetadata {
     // Table for which this B+ tree is for
+    //表名
     private final String tableName;
 
-    // Column that this B+ tree uses as a search key
+    // Column that this B+ tree uses as a search key 值
     private final String colName;
 
     // B+ trees map keys (of some type) to record ids. This is the type of the

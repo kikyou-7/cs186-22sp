@@ -9,6 +9,7 @@ import edu.berkeley.cs186.database.memory.BufferManager;
 import edu.berkeley.cs186.database.memory.Page;
 import edu.berkeley.cs186.database.table.RecordId;
 
+import javax.xml.crypto.Data;
 import java.nio.ByteBuffer;
 import java.util.*;
 
@@ -81,8 +82,9 @@ class InnerNode extends BPlusNode {
     @Override
     public LeafNode get(DataBox key) {
         // TODO(proj2): implement
-        int index = numLessThanEqual(key,keys);
-        BPlusNode child = getChild(index);
+        //要找到key在哪个孩子节点, 找有几个entry小于key, 然后得到指针
+        int index = numLessThanEqual(key, keys);//小于key的entry数目
+        BPlusNode child = getChild(index);//getChild() 返回孩子节点
         return child.get(key);
     }
 
@@ -91,19 +93,50 @@ class InnerNode extends BPlusNode {
     public LeafNode getLeftmostLeaf() {
         assert(children.size() > 0);
         // TODO(proj2): implement
-        BPlusNode child = this; // 修改类型,定义起点
-// 循序类型匹配,只找内部结点
-        while (child.getClass() != LeafNode.class) {
-            child = ((InnerNode)child).getChild(0); // 因为内部节点的存储方式都是用List,所以这里每次循环都是取最左边的结点来查找,靠循环递归下去
-        }
-        return (LeafNode) child;
+        BPlusNode leftChild = getChild(0);
+        return leftChild.getLeftmostLeaf();
     }
-
     // See BPlusNode.put.
     @Override
     public Optional<Pair<DataBox, Long>> put(DataBox key, RecordId rid) {
         // TODO(proj2): implement
-
+        //递归给孩子节点 处理完后 如果返回了一个非空的pair,插入 分裂
+        int num = numLessThanEqual(key, keys);
+        BPlusNode child = getChild(num);
+        Optional<Pair<DataBox, Long>> feedBack = child.put(key, rid); //递归下去
+        //如果孩子节点分裂了 增加一个entry 更新指针
+        if (feedBack.isPresent()) {
+            keys.add(num, feedBack.get().getFirst());
+            children.add(num + 1, feedBack.get().getSecond());
+            int d = metadata.getOrder();
+            //增加完entry后自身需要分裂
+            if (keys.size() > 2 * d) {
+                assert(keys.size() == 2 * d + 1);
+                List<DataBox> rightKeys = new ArrayList<>();
+                List<Long> rightChildren = new ArrayList<>();
+                //右半部分d+1个keys children
+                for (int i = 0; i <= d; i++) {
+                    rightKeys.add(keys.remove(d));
+                    rightChildren.add(children.remove(d+1));
+                }
+                //需要push up的就是右半部分的第一个entry
+                DataBox pushUpKey = rightKeys.remove(0);
+                InnerNode right = new InnerNode(metadata, bufferManager, rightKeys,
+                        rightChildren, treeContext);
+                long pageNum = right.getPage().getPageNum();
+                right.sync();//新节点别忘了写回磁盘更新page
+                sync();
+                assert(keys.size() == d);
+                assert(children.size() == d+1);
+                return Optional.of(new Pair<DataBox, Long>(pushUpKey, pageNum));
+            }
+            //自身不需要分裂 直接结束
+            else {
+                sync();
+                return Optional.empty();
+            }
+        }
+        //孩子节点没分裂 直接结束
         return Optional.empty();
     }
 
@@ -112,16 +145,49 @@ class InnerNode extends BPlusNode {
     public Optional<Pair<DataBox, Long>> bulkLoad(Iterator<Pair<DataBox, RecordId>> data,
             float fillFactor) {
         // TODO(proj2): implement
-
-        return Optional.empty();
+        int d = metadata.getOrder();
+        //此时root必定有一个entry, 对最右边的孩子进行bulkLoad
+        while (keys.size() <= 2*d) {
+            BPlusNode rightMostChild = this.getChild(children.size() - 1);
+            Optional<Pair<DataBox, Long>> feedBack = rightMostChild.bulkLoad(data, fillFactor);
+            if (feedBack.isPresent()) {
+                keys.add(feedBack.get().getFirst());
+                children.add(feedBack.get().getSecond());
+            }
+            else {
+                break;
+            }
+        }
+        //没有分裂
+        if (keys.size() < 2*d+1) {
+            sync();
+            return Optional.empty();
+        }
+        //需要分裂 把右半部分分裂出一个新的inner node， 并返回其第一个key, pageNum
+        else {
+            assert(keys.size() == 2*d+1);
+            List<DataBox> rightKeys = new ArrayList<>();
+            List<Long> rightChildren = new ArrayList<>();
+            for (int i = 0; i <= d; i++) {
+                rightKeys.add(keys.remove(d));
+                rightChildren.add(children.remove(d+1));
+            }
+            DataBox pushUpKey = rightKeys.remove(0);
+            InnerNode right = new InnerNode(metadata, bufferManager, rightKeys, rightChildren, treeContext);
+            long pageNum = right.getPage().getPageNum();
+            sync();
+            right.sync();
+            return Optional.of(new Pair<DataBox, Long>(pushUpKey, pageNum));
+        }
     }
 
     // See BPlusNode.remove.
     @Override
     public void remove(DataBox key) {
         // TODO(proj2): implement
-
-        return;
+        //和get的思路一样，先找到孩子节点
+        BPlusNode child = get(key);
+        child.remove(key);
     }
 
     // Helpers /////////////////////////////////////////////////////////////////
@@ -129,9 +195,10 @@ class InnerNode extends BPlusNode {
     public Page getPage() {
         return page;
     }
-
+    //返回第i个孩子节点的引用
     private BPlusNode getChild(int i) {
-        long pageNum = children.get(i);
+        long pageNum = children.get(i);//pageNum是指针
+        //fromBytes 通过pageNum反序列化得到树的节点
         return BPlusNode.fromBytes(metadata, bufferManager, treeContext, pageNum);
     }
 
@@ -216,6 +283,7 @@ class InnerNode extends BPlusNode {
      * If we're searching the tree for value c, then we need to visit child 3.
      * Not coincidentally, there are also 3 values less than or equal to c (i.e.
      * a, b, c).
+     * 如果我们要找key = c, 先算出有3个key小于等于c, 然后去列表中下标为3的孩子节点
      */
     static <T extends Comparable<T>> int numLessThanEqual(T x, List<T> ys) {
         int n = 0;
@@ -346,15 +414,16 @@ class InnerNode extends BPlusNode {
      */
     public static InnerNode fromBytes(BPlusTreeMetadata metadata,
                                       BufferManager bufferManager, LockContext treeContext, long pageNum) {
-        Page page = bufferManager.fetchPage(treeContext, pageNum);
-        Buffer buf = page.getBuffer();
-
+        Page page = bufferManager.fetchPage(treeContext, pageNum);//先读取缓冲区,保存缓冲区的page地址
+        Buffer buf = page.getBuffer();//通过buf 访问page
+        //buf.get() 读取buf当前bit的数据并指针移向下一位
+        //buf.getInt() 读取32位作为一个int
         byte nodeType = buf.get();
-        assert(nodeType == (byte) 0);
+        assert(nodeType == (byte) 0);//保证这个page是一个inner node
 
-        List<DataBox> keys = new ArrayList<>();
-        List<Long> children = new ArrayList<>();
-        int n = buf.getInt();
+        List<DataBox> keys = new ArrayList<>();//keys
+        List<Long> children = new ArrayList<>();//children pointer
+        int n = buf.getInt();//num of keys
         for (int i = 0; i < n; ++i) {
             keys.add(DataBox.fromBytes(buf, metadata.getKeySchema()));
         }

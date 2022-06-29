@@ -57,7 +57,7 @@ public class SNLJOperator extends JoinOperator {
             if (leftSourceIterator.hasNext()) leftRecord = leftSourceIterator.next();
 
             this.rightSourceIterator = getRightSource().backtrackingIterator();
-            this.rightSourceIterator.markNext();
+            this.rightSourceIterator.markNext();//在第0条record处标记
         }
 
         /**

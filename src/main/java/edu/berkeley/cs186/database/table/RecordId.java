@@ -10,6 +10,7 @@ import java.util.Objects;
  * (the number of the page on which it resides) and its entry number (the
  * record's index in the page). A RecordId is a pair of the page number and
  * entry number.
+ * 每个表里独有的
  */
 public class RecordId implements Comparable<RecordId> {
     private long pageNum;

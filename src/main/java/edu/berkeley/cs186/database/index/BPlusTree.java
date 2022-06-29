@@ -1,5 +1,6 @@
 package edu.berkeley.cs186.database.index;
 
+import edu.berkeley.cs186.database.Database;
 import edu.berkeley.cs186.database.TransactionContext;
 import edu.berkeley.cs186.database.common.Pair;
 import edu.berkeley.cs186.database.concurrency.LockContext;
@@ -9,8 +10,10 @@ import edu.berkeley.cs186.database.databox.DataBox;
 import edu.berkeley.cs186.database.databox.Type;
 import edu.berkeley.cs186.database.io.DiskSpaceManager;
 import edu.berkeley.cs186.database.memory.BufferManager;
+import edu.berkeley.cs186.database.table.Record;
 import edu.berkeley.cs186.database.table.RecordId;
 
+import javax.xml.crypto.Data;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -51,10 +54,10 @@ import java.util.*;
  *   fromDisk.get(new IntDataBox(2)); // Optional.of(RecordId(2, 2))
  */
 public class BPlusTree {
-    // Buffer manager
+    // Buffer manager 缓存管理器
     private BufferManager bufferManager;
 
-    // B+ tree metadata
+    // B+ tree metadata b树的metadata
     private BPlusTreeMetadata metadata;
 
     // root of the B+ tree
@@ -146,9 +149,7 @@ public class BPlusTree {
         LockUtil.ensureSufficientLockHeld(lockContext, LockType.NL);
 
         // TODO(proj2): implement
-
-        return root.get(key) // 根据key去找到结点因为内部结点,叶结点都实现了get,这里会递归去找
-                .getKey(key); // 最后找到叶子结点的时候,再调用getKey返回Optional<RecordId>
+        return root.get(key).getKey(key);//get()返回leaf node, getKey()返回Optional.of(rid)
     }
 
     /**
@@ -203,8 +204,7 @@ public class BPlusTree {
         LockUtil.ensureSufficientLockHeld(lockContext, LockType.NL);
 
         // TODO(proj2): Return a BPlusTreeIterator.
-
-        return Collections.emptyIterator();
+        return new BPlusTreeIterator();
     }
 
     /**
@@ -236,8 +236,7 @@ public class BPlusTree {
         LockUtil.ensureSufficientLockHeld(lockContext, LockType.NL);
 
         // TODO(proj2): Return a BPlusTreeIterator.
-
-        return Collections.emptyIterator();
+        return new BPlusTreeIterator(key);
     }
 
     /**
@@ -258,8 +257,17 @@ public class BPlusTree {
         // Note: You should NOT update the root variable directly.
         // Use the provided updateRoot() helper method to change
         // the tree's root if the old root splits.
-
-        return;
+        Optional<Pair<DataBox, Long>> feedBack = root.put(key, rid);
+        if (feedBack.isPresent()) {
+            /*root已经分裂了 root作为左边的叶子 feedBack作为右边的叶子 */
+            List<DataBox> keys = new ArrayList<>();
+            List<Long> children = new ArrayList<>();
+            keys.add(feedBack.get().getFirst());
+            children.add(root.getPage().getPageNum());
+            children.add(feedBack.get().getSecond());
+            InnerNode newRoot = new InnerNode(metadata, bufferManager, keys, children, lockContext);
+            updateRoot(newRoot);
+        }
     }
 
     /**
@@ -278,6 +286,7 @@ public class BPlusTree {
      *
      * The behavior of this method should be similar to that of InnerNode's
      * bulkLoad (see comments in BPlusNode.bulkLoad).
+     * 与 put 类似的操作
      */
     public void bulkLoad(Iterator<Pair<DataBox, RecordId>> data, float fillFactor) {
         // TODO(proj4_integration): Update the following line
@@ -287,8 +296,19 @@ public class BPlusTree {
         // Note: You should NOT update the root variable directly.
         // Use the provided updateRoot() helper method to change
         // the tree's root if the old root splits.
-
-        return;
+        while (data.hasNext()) {
+            Optional<Pair<DataBox, Long>> feedBack = root.bulkLoad(data, fillFactor);
+            //根节点分裂了
+            if (feedBack.isPresent()) {
+                List<DataBox> keys = new ArrayList<>();
+                List<Long> children = new ArrayList<>();
+                keys.add(feedBack.get().getFirst());
+                children.add(root.getPage().getPageNum());
+                children.add(feedBack.get().getSecond());
+                InnerNode newRoot = new InnerNode(metadata, bufferManager, keys, children, lockContext);
+                updateRoot(newRoot);
+            }
+        }
     }
 
     /**
@@ -308,8 +328,7 @@ public class BPlusTree {
         LockUtil.ensureSufficientLockHeld(lockContext, LockType.NL);
 
         // TODO(proj2): implement
-
-        return;
+        root.remove(key);
     }
 
     // Helpers /////////////////////////////////////////////////////////////////
@@ -420,21 +439,49 @@ public class BPlusTree {
     }
 
     // Iterator ////////////////////////////////////////////////////////////////
+    /*迭代器 访问的是叶子节点的entry, 叶子是单链表结构，每个节点是一个List<RecordId>
+    * it的类型是List<RecordId>的迭代器  idx指向当前it所在的叶子节点
+    * hasNext的条件是it.hasNext() or idx的后继存在*/
     private class BPlusTreeIterator implements Iterator<RecordId> {
         // TODO(proj2): Add whatever fields and constructors you want here.
-
+        private LeafNode idx; //迭代 叶子节点
+        private final Optional<DataBox> Key; // scanGreaterEqual()
+        private Iterator<RecordId> it; // rid List迭代器
+        /* 两种初始化的方式 对应scanAll()  scanGreaterEqual() */
+        BPlusTreeIterator () {
+            idx = root.getLeftmostLeaf();
+            Key = Optional.empty();
+            it = idx.scanAll();
+        }
+        BPlusTreeIterator (DataBox key) {
+            idx = root.get(key);
+            Key = Optional.ofNullable(key);
+            it = idx.scanGreaterEqual(key);
+        }
         @Override
+        //当前指针是否有意义
         public boolean hasNext() {
             // TODO(proj2): implement
-
-            return false;
+            return ((it != null && it.hasNext()) ||
+                    idx.getRightSibling().isPresent());
         }
-
         @Override
         public RecordId next() {
             // TODO(proj2): implement
-
-            throw new NoSuchElementException();
+            if (hasNext()) {
+                if (it.hasNext()) {
+                    return it.next();
+                }
+                else {
+                    idx = idx.getRightSibling().get();
+                    it = idx.scanAll();
+                    return next();
+                    //如果返回it.next()的话需要额外判断hasNext(),因为删除操作可以使得叶子是空链表
+                }
+            }
+            else {
+                throw new NoSuchElementException();
+            }
         }
     }
 }

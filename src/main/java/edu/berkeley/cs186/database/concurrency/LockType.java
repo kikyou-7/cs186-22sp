@@ -22,8 +22,21 @@ public enum LockType {
             throw new NullPointerException("null lock type");
         }
         // TODO(proj4_part1): implement
-
-        return false;
+        switch (a) {
+            case S:
+                return b != X && b != IX && b != SIX;
+            case X:
+                return b == NL;
+            case IS:
+                return b != X;
+            case IX:
+                return b != X && b != SIX &&  b != S;
+            case SIX:
+                return b == NL || b == IS;
+            case NL:
+                return true;
+            default: throw new UnsupportedOperationException("bad lock type");
+        }
     }
 
     /**
@@ -54,8 +67,26 @@ public enum LockType {
             throw new NullPointerException("null lock type");
         }
         // TODO(proj4_part1): implement
-
-        return false;
+        switch (childLockType) {
+            case S:
+                return parentLockType == IX
+                        || parentLockType == IS;
+            case X:
+                return parentLockType == IX
+                        || parentLockType == SIX;
+            case IS:
+                return parentLockType == IS
+                        || parentLockType == IX;
+            case IX:
+                return parentLockType == IX
+                        || parentLockType == SIX;
+            case SIX:
+                return parentLockType == SIX
+                        || parentLockType == IX;
+            case NL:
+                return true;
+            default: throw new UnsupportedOperationException("bad lock type");
+        }
     }
 
     /**
@@ -64,13 +95,37 @@ public enum LockType {
      * an X lock, because an X lock allows the transaction to do everything
      * the S lock allowed it to do).
      */
+    // X最强 全都能替代
+    // SIX除了X之外都能替代
+    // S能替代IS
+    // IS谁也替代不了
+    // IX能替代IS
     public static boolean substitutable(LockType substitute, LockType required) {
         if (required == null || substitute == null) {
             throw new NullPointerException("null lock type");
         }
         // TODO(proj4_part1): implement
-
-        return false;
+        if (substitute.equals(required)) return true;
+        switch (substitute) {
+            case S:
+                return required == IS ||
+                        required == NL;
+            case X:
+                return true;
+            case IS:
+                return required == NL;
+            case IX:
+                return required == IS ||
+                        required == NL;
+            case SIX:
+                return required == S ||
+                        required == IS ||
+                        required == IX ||
+                        required == NL;
+            case NL:
+                return required == NL;
+            default: throw new UnsupportedOperationException("bad lock type");
+        }
     }
 
     /**

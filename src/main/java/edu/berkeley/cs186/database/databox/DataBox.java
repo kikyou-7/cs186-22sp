@@ -66,7 +66,7 @@ public abstract class DataBox implements Comparable<DataBox> {
     public byte[] hashBytes() {
         return toBytes();
     }
-
+    //从buffer中读取一段数据 作为DataBox的类型
     public static DataBox fromBytes(Buffer buf, Type type) {
         switch (type.getTypeId()) {
             case BOOL: {

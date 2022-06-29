@@ -164,6 +164,7 @@ public abstract class QueryOperator implements Iterable<Record> {
      * backtracking
      * @return A backtracking iterator over the records of this operator
      */
+    //只有materialized的operator才会重写此方法 以支持回溯迭代器
     public BacktrackingIterator<Record> backtrackingIterator() {
         throw new UnsupportedOperationException(
             "This operator doesn't support backtracking. You may want to " +
@@ -180,6 +181,7 @@ public abstract class QueryOperator implements Iterable<Record> {
      * iterator over those records. Setting maxPages to 1 will result in an
      * iterator over a single page of records.
      */
+    //BacktrackingIterator 迭代的只能是一个materialized过的对象(因为需要把数据写入内存中的一个数组)
     public static BacktrackingIterator<Record> getBlockIterator(Iterator<Record> records, Schema schema, int maxPages) {
         int recordsPerPage = Table.computeNumRecordsPerPage(PageDirectory.EFFECTIVE_PAGE_SIZE, schema);
         int maxRecords = recordsPerPage * maxPages;

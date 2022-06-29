@@ -10,6 +10,7 @@ import edu.berkeley.cs186.database.memory.BufferManager;
 import edu.berkeley.cs186.database.memory.Page;
 import edu.berkeley.cs186.database.table.RecordId;
 
+import javax.swing.text.html.Option;
 import java.nio.ByteBuffer;
 import java.util.*;
 
@@ -98,6 +99,8 @@ class LeafNode extends BPlusNode {
     //
     // Make sure your code (or your tests) doesn't use stale in-memory cached
     // values of keys and rids.
+    // 这个例子说明, 我们读取节点信息时, 不要读缓存信息, 应该重新从磁盘中读取 (写于5-09
+
     private List<DataBox> keys;
     private List<RecordId> rids;
 
@@ -123,27 +126,80 @@ class LeafNode extends BPlusNode {
 
     // Core API ////////////////////////////////////////////////////////////////
     // See BPlusNode.get.
+    /**
+     * n.get(k) returns the leaf node on which k may reside when queried from n.
+     * For example, consider the following B+ tree (for brevity, only keys are
+     * shown; record ids are omitted).
+     * get  返回叶子节点
+     *
+     *                               inner
+     *                               +----+----+----+----+
+     *                               | 10 | 20 |    |    |
+     *                               +----+----+----+----+
+     *                              /     |     \
+     *                         ____/      |      \____
+     *                        /           |           \
+     *   +----+----+----+----+  +----+----+----+----+  +----+----+----+----+
+     *   |  1 |  2 |  3 |    |->| 11 | 12 | 13 |    |->| 21 | 22 | 23 |    |
+     *   +----+----+----+----+  +----+----+----+----+  +----+----+----+----+
+     *   leaf0                  leaf1                  leaf2
+     *
+     * inner.get(x) should return
+     *
+     *   - leaf0 when x < 10,
+     *   - leaf1 when 10 <= x < 20, and
+     *   - leaf2 when x >= 20.
+     *
+     * Note that inner.get(4) would return leaf0 even though leaf0 doesn't
+     * actually contain 4.
+     */
     @Override
     public LeafNode get(DataBox key) {
         // TODO(proj2): implement
-
-        return this;
+        return this; //只需要返回自己即可, 接着会调用.getKey()
     }
 
     // See BPlusNode.getLeftmostLeaf.
     @Override
     public LeafNode getLeftmostLeaf() {
         // TODO(proj2): implement
-
-        return this;
+        return this;//返回自己
     }
 
     // See BPlusNode.put.
     @Override
     public Optional<Pair<DataBox, Long>> put(DataBox key, RecordId rid) {
         // TODO(proj2): implement
-
+        if (keys.contains(key)) {
+            throw new BPlusTreeException("A duplicate was inserted!");
+        }
+        //阶数
+        int order = metadata.getOrder();
+        int num = InnerNode.numLessThanEqual(key, keys);
+        //插入
+        keys.add(num, key);
+        rids.add(num, rid);
+        //分裂 需要new一个叶节点 存右半部分
+        if (keys.size() > 2 * order) {
+            assert(keys.size() == 2 * order + 1);
+            List<DataBox> rightKeys = new ArrayList<>();
+            List<RecordId> rightRids = new ArrayList<>();
+            for (int i = 0; i <= order; i++) {
+                rightRids.add(this.rids.remove(order));
+                rightKeys.add(this.keys.remove(order));
+            }
+            //右边的节点 记得维护一下单链表结构
+            LeafNode right = new LeafNode(metadata, bufferManager, rightKeys, rightRids,
+                    this.rightSibling, treeContext);
+            long rightPageNum = right.getPage().getPageNum();
+            this.rightSibling = Optional.of(rightPageNum);
+            right.sync();
+            sync();
+            return Optional.of(new Pair<DataBox, Long>(rightKeys.get(0), rightPageNum));
+        }
+        sync();
         return Optional.empty();
+
     }
 
     // See BPlusNode.bulkLoad.
@@ -151,16 +207,44 @@ class LeafNode extends BPlusNode {
     public Optional<Pair<DataBox, Long>> bulkLoad(Iterator<Pair<DataBox, RecordId>> data,
             float fillFactor) {
         // TODO(proj2): implement
-
-        return Optional.empty();
+        int fillOrder = Math.round(fillFactor * 2 * metadata.getOrder());
+        /* 比fillOrder多放1个,然后把多余的这个entry分裂出去, 得到一个新的叶节点right
+        * 如果record数量不足以导致分裂，返回Optional.empty()
+        * 否则返回right的第一个key，right的pageNum
+        * 与put类似 只不过每次都是放一堆data*/
+        for (int i = keys.size() + 1; i <= fillOrder + 1 && data.hasNext(); i++) {
+            Pair<DataBox, RecordId> entry = data.next();
+            keys.add(entry.getFirst());
+            rids.add(entry.getSecond());
+        }
+        //data剩余数目不足以去分裂出新叶子
+        if (keys.size() < fillOrder + 1) {
+            sync();
+            return Optional.empty();
+        }
+        List<DataBox> rightKeys = new ArrayList<>();
+        List<RecordId> rightRids = new ArrayList<>();
+        rightKeys.add(keys.remove(fillOrder));
+        rightRids.add(rids.remove(fillOrder));
+        LeafNode right = new LeafNode(metadata, bufferManager, rightKeys, rightRids, Optional.empty(),
+                 treeContext);
+        //维护当前叶子的链表结构
+        this.rightSibling = Optional.of(right.getPage().getPageNum());
+        sync();
+        right.sync();
+        return Optional.of(new Pair<DataBox, Long>(rightKeys.get(0), right.getPage().getPageNum()));
     }
 
     // See BPlusNode.remove.
     @Override
     public void remove(DataBox key) {
         // TODO(proj2): implement
-
-        return;
+        int index = keys.indexOf(key);
+        if (index != -1) {
+            keys.remove(index);
+            rids.remove(index);
+            sync();
+        }
     }
 
     // Iterators ///////////////////////////////////////////////////////////////
@@ -321,7 +405,7 @@ class LeafNode extends BPlusNode {
         //     a               b                   c                         d
         //
         // represent a leaf node with sibling on page 4 and a single (key, rid)
-        // pair with key 3 and page id (3, 1).
+        // pair with key 3 and page id (3, 1).  key->long  page id-> short
 
         assert (keys.size() == rids.size());
         assert (keys.size() <= 2 * metadata.getOrder());
@@ -347,7 +431,7 @@ class LeafNode extends BPlusNode {
     }
 
     /**
-     * Loads a leaf node from page `pageNum`.
+     * Loads a leaf node from page `pageNum`. 即：反序列化将page中的信息读取并得到一个leaf node
      */
     public static LeafNode fromBytes(BPlusTreeMetadata metadata, BufferManager bufferManager,
                                      LockContext treeContext, long pageNum) {
@@ -355,23 +439,27 @@ class LeafNode extends BPlusNode {
         // Note: LeafNode has two constructors. To implement fromBytes be sure to
         // use the constructor that reuses an existing page instead of fetching a
         // brand new one.
-        Page page = bufferManager.fetchPage(treeContext,pageNum);
-        Buffer buffer = page.getBuffer();
 
-        byte nodeType = buffer.get();
-        assert(nodeType == (byte) 1);
+        //Create a page handle with the given buffer frame
+        Page page = bufferManager.fetchPage(treeContext, pageNum);
 
-        ArrayList<DataBox> keys = new ArrayList<>();
-        ArrayList<RecordId> recordIds = new ArrayList<>();
-        long siblingTemp = buffer.getLong();
-        int numPairs = buffer.getInt();
-        Optional<Long> sibling = Optional.ofNullable(siblingTemp == Long.BYTES ? null : siblingTemp);
-        for (int i = 0; i < numPairs; i++) {
-            keys.add(DataBox.fromBytes(buffer,metadata.getKeySchema()));
-            recordIds.add(RecordId.fromBytes(buffer));
+        //Gets a Buffer object for more convenient access to the page.
+        Buffer buf = page.getBuffer();//buf is a Buffer object over this page
+        byte noneType = buf.get();
+        assert(noneType == (byte) 1);
+        long siblingId = buf.getLong();
+        Optional<Long> sibling = Optional.of(siblingId);//右边叶节点的指针
+        if (siblingId == -1L) {
+            sibling = Optional.empty();
         }
-
-         return new LeafNode(metadata,bufferManager,page, keys,recordIds,sibling,treeContext);
+        int n = buf.getInt();
+        List<DataBox> keys = new ArrayList<>();
+        List<RecordId> recordIds = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            keys.add(DataBox.fromBytes(buf, metadata.getKeySchema()));
+            recordIds.add(RecordId.fromBytes(buf));
+        }
+        return new LeafNode(metadata, bufferManager, page, keys, recordIds, sibling, treeContext);
 
     }
     /**

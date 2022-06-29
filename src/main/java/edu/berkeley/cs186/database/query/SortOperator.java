@@ -63,6 +63,7 @@ public class SortOperator extends QueryOperator {
         return Collections.singletonList(sortColumnName);
     }
 
+    //注意，sort最后会写回磁盘，返回的是磁盘中一个Run的可回溯迭代器 line 77
     @Override
     public boolean materialized() { return true; }
 
@@ -85,15 +86,22 @@ public class SortOperator extends QueryOperator {
      * @return a single sorted run containing all the records from the input
      * iterator
      */
+    //直接遍历迭起器保存元素给一个List 然后sort一下即可
+    //对应Pass 0 ，读进B个page 排序
     public Run sortRun(Iterator<Record> records) {
         // TODO(proj3_part1): implement
-        return null;
+        ArrayList<Record> ret = new ArrayList<>();
+        while (records.hasNext()) {
+            ret.add(records.next());
+        }
+        ret.sort(this.comparator);
+        return makeRun(ret);
     }
 
     /**
      * Given a list of sorted runs, returns a new run that is the result of
      * merging the input runs. You should use a Priority Queue (java.util.PriorityQueue)
-     * to determine which record should be should be added to the output run
+     * to determine which record should be added to the output run
      * next.
      *
      * You are NOT allowed to have more than runs.size() records in your
@@ -105,10 +113,30 @@ public class SortOperator extends QueryOperator {
      *
      * @return a single sorted run obtained by merging the input runs
      */
+    //用优先队列实现K指针归并
+    //优先队列维护k个极小值 然后每次取出最小，如果是最小值产生于第i个run，那么接着从第i个run取出一个record丢入优先队列
+    //将这些runs合并成1个run
     public Run mergeSortedRuns(List<Run> runs) {
         assert (runs.size() <= this.numBuffers - 1);
         // TODO(proj3_part1): implement
-        return null;
+        ArrayList<Record> ret = new ArrayList<>();
+        ArrayList<Iterator<Record>> iterators = new ArrayList<>();
+        RecordPairComparator pairComparator = new RecordPairComparator();
+        PriorityQueue<Pair<Record,Integer>> q = new PriorityQueue<>(pairComparator);
+        for (int i = 0; i < runs.size(); i++) {
+            Iterator<Record> t = runs.get(i).iterator();
+            q.add(new Pair<>(t.next(), i));
+            iterators.add(t);
+        }
+        while (q.size() > 0) {
+            Pair<Record,Integer> top = q.remove();
+            ret.add(top.getFirst());
+            if (iterators.get(top.getSecond()).hasNext()) {
+                Record t = iterators.get(top.getSecond()).next();
+                q.add(new Pair<>(t, top.getSecond()));
+            }
+        }
+        return makeRun(ret);
     }
 
     /**
@@ -131,9 +159,15 @@ public class SortOperator extends QueryOperator {
      *
      * @return a list of sorted runs obtained by merging the input runs
      */
+    // 对应的是每趟归并 不断合并B-1个runs成为一个run
     public List<Run> mergePass(List<Run> runs) {
         // TODO(proj3_part1): implement
-        return Collections.emptyList();
+        List<Run> ret = new ArrayList<>();
+        for (int i = 0; i < runs.size(); i++) {
+            ret.add(mergeSortedRuns(runs.subList(i, Math.min(i + numBuffers - 1, runs.size()))));
+            i = i + numBuffers - 2;
+        }
+        return ret;
     }
 
     /**
@@ -149,7 +183,18 @@ public class SortOperator extends QueryOperator {
         Iterator<Record> sourceIterator = getSource().iterator();
 
         // TODO(proj3_part1): implement
-        return makeRun(); // TODO(proj3_part1): replace this!
+        List<Run> resultFile = new ArrayList<>();
+        //Pass 0  读进B个page 然后排序得到一个Run对象
+        while (sourceIterator.hasNext()) {
+            Iterator<Record> blockIterator = getBlockIterator(sourceIterator, getSchema(), numBuffers);
+            resultFile.add(sortRun(blockIterator));
+        }
+        //归并 每次合并B-1个runs
+        while (resultFile.size() > 1) {
+            resultFile = mergePass(resultFile);
+        }
+        assert(resultFile.size() == 1);
+        return resultFile.get(0);
     }
 
     /**

@@ -45,6 +45,7 @@ public class SHJOperator extends JoinOperator {
     @Override
     public boolean materialized() { return true; }
 
+    //并非stream in pages，而是materialized在Run中  Run是一段磁盘空间
     @Override
     public BacktrackingIterator<Record> backtrackingIterator() {
         if (joinedRecords == null) {

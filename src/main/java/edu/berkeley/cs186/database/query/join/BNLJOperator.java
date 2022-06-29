@@ -48,6 +48,12 @@ public class BNLJOperator extends JoinOperator {
      * Look over the implementation in SNLJOperator if you want to get a feel
      * for the fetchNextRecord() logic.
      */
+
+    /**
+     * 枚举左表的一个block, 枚举右表的一个page，对于block中每一条record,遍历一遍右表的page
+     * 当右表读入新page，block要回溯到第一条record
+     * 所以，每次读入新的block、page 都需要对迭代器进行markNext()
+     */
     private class BNLJIterator implements Iterator<Record>{
         // Iterator over all the records of the left source
         private Iterator<Record> leftSourceIterator;
@@ -66,7 +72,6 @@ public class BNLJOperator extends JoinOperator {
             super();
             this.leftSourceIterator = getLeftSource().iterator();
             this.fetchNextLeftBlock();
-
             this.rightSourceIterator = getRightSource().backtrackingIterator();
             this.rightSourceIterator.markNext();
             this.fetchNextRightPage();
@@ -87,6 +92,8 @@ public class BNLJOperator extends JoinOperator {
          */
         private void fetchNextLeftBlock() {
             // TODO(proj3_part1): implement
+            leftBlockIterator = getBlockIterator(leftSourceIterator, getLeftSource().getSchema(), numBuffers - 2);
+            leftBlockIterator.markNext();
         }
 
         /**
@@ -101,6 +108,8 @@ public class BNLJOperator extends JoinOperator {
          */
         private void fetchNextRightPage() {
             // TODO(proj3_part1): implement
+            rightPageIterator = getBlockIterator(rightSourceIterator, getRightSource().getSchema(), 1);
+            rightPageIterator.markNext();
         }
 
         /**
@@ -111,9 +120,57 @@ public class BNLJOperator extends JoinOperator {
          * function directly from this file, since BNLJOperator is a subclass
          * of JoinOperator).
          */
+
+        /** 左表读取新的record时 有三种情况 需要分类讨论
+         * 1. 左表的block仍有record剩余，此时直接将右表page reset一下 并更新leftRecord即可
+         * 2. block无record剩余，且右表仍有page剩余，此时对于当前block需要继续匹配右边剩余的page
+         * 3. block无record剩余，右表也无page剩余, 此时左表需要读取新的block, 并将右表reset
+         */
+        private void getLeftRecord() {
+            // 1.
+            if (leftBlockIterator.hasNext()) {
+                leftRecord = leftBlockIterator.next();
+                rightPageIterator.reset();
+            }
+            //2. 对于当前page, 左表block所有record都遍历了一次 我们读取右表下一个page
+            //3. 如果右表已经穷尽了, 读取下一个block 并回溯到右表初始位置 读取第一个page
+            else {
+                if (!rightSourceIterator.hasNext()) {
+                    rightSourceIterator.reset();
+                    fetchNextRightPage();
+                    fetchNextLeftBlock();
+                }
+                else {
+                    fetchNextRightPage();
+                    leftBlockIterator.reset();
+                }
+                //此时如果左表已经遍历完了, leftRecord的值为null
+                if (leftBlockIterator.hasNext()) {
+                    leftRecord = leftBlockIterator.next();
+                }
+                else {
+                    leftRecord = null;
+                }
+            }
+        }
         private Record fetchNextRecord() {
             // TODO(proj3_part1): implement
-            return null;
+            while (true) {
+                if (leftRecord == null) {
+                    getLeftRecord();
+                }
+                if (leftRecord == null) return null;
+                if (rightPageIterator.hasNext()) {
+                    Record rightRecord = rightPageIterator.next();
+                    if (compare(leftRecord, rightRecord) == 0) {
+                        return leftRecord.concat(rightRecord);
+                    }
+                }
+                //对于当前leftRecord 右表page遍历结束, 更新leftRecord 分类讨论有三种情况
+                else {
+                    getLeftRecord();
+                }
+            }
         }
 
         /**

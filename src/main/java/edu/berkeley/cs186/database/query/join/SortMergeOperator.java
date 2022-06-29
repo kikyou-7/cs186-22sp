@@ -45,6 +45,8 @@ public class SortMergeOperator extends JoinOperator {
      * that the right source must be materialized since we may need to backtrack
      * over it, unlike the left source.
      */
+    //右表的record涉及回溯操纵，如果只是普通的迭代器，是不支持回溯的，需要可回溯迭代器(BacktrackingIterator)
+    //只有物质化的operator才支持可回溯迭代器 (可回溯迭代器其实就是把整段数据写进内存 以数组形式)
     private static QueryOperator prepareRight(TransactionContext transaction,
                                               QueryOperator rightSource,
                                               String rightColumn) {
@@ -135,12 +137,86 @@ public class SortMergeOperator extends JoinOperator {
         }
 
         /**
+         *
+         * @param leftRecord
+         * @param rightRecord
+         * @return true if these two tables have matched tuples
+         */
+        //找到第一条匹配
+        private boolean checkEqualRecordsLeft() {
+            if (leftRecord == null || rightRecord == null) return false;
+            //如果找不到第一条匹配 说明两个表能匹配的record已经全部找完了
+            while (compare(leftRecord, rightRecord) != 0) {
+                int f = compare(leftRecord, rightRecord);
+                if (f > 0) {
+                    if (rightIterator.hasNext()) {
+                        rightRecord = rightIterator.next();
+                    }
+                    else {
+                        return false;
+                    }
+                }
+                else {
+                    if (leftIterator.hasNext()) {
+                        leftRecord = leftIterator.next();
+                    }
+                    else {
+                        return false;
+                    }
+                }
+            }
+            assert(compare(leftRecord, rightRecord) == 0);
+            this.marked = true;
+            return true;
+        }
+        private Record getNextRecord(Iterator<Record> it) {
+            if (it.hasNext()) {
+                return it.next();
+            }
+            return null;
+        }
+        /**
          * Returns the next record that should be yielded from this join,
          * or null if there are no more records to join.
          */
+        /**
+         * 先调整左右表指针，使得处于右指针第一条的匹配阶段,标记marked=true 右迭代器markPrev 表示此时开启一段匹配
+         * 只要是marked==true,不断地去右表匹配中 直到匹配失败(此时右表指针可能为null)
+         * 此时需要左指针下移 右指针回溯,marked=false
+         * 如果marked == false,我们继续去找第一条匹配
+         */
         private Record fetchNextRecord() {
-            // TODO(proj3_part1): implement
-            return null;
+            while (true) {
+                //此时是仍处于右边的一段匹配
+                if (marked) {
+                    //1.匹配失败 左表指针下移 右表指针回溯
+                    if (rightRecord == null || compare(leftRecord, rightRecord) != 0) {
+                        leftRecord = getNextRecord(leftIterator);
+                        rightIterator.reset();
+                        rightRecord = rightIterator.next();
+                        marked = false;
+                    }
+                    //匹配成功 继续匹配
+                    else {
+                        assert(compare(leftRecord, rightRecord) == 0);
+                        Record ret = leftRecord.concat(rightRecord);
+                        rightRecord = getNextRecord(rightIterator);
+                        return ret;
+                    }
+                }
+                else {
+                    //先找到第一处匹配 没找到的话就是null
+                    if (!checkEqualRecordsLeft()) {
+                        return null;
+                    }
+                    assert(compare(leftRecord, rightRecord) == 0);
+                    Record ret = leftRecord.concat(rightRecord);
+                    //此时是ret第一条匹配
+                    rightIterator.markPrev();
+                    rightRecord = getNextRecord(rightIterator);
+                    return ret;
+                }
+            }
         }
 
         @Override

@@ -99,4 +99,9 @@ public class ResourceName {
         }
         return rn.toString();
     }
+
+    // 按树中的层级排序
+    public int resourceLevel() {
+        return this.names.size();
+    }
 }

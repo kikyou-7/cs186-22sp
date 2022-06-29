@@ -9,6 +9,7 @@ import edu.berkeley.cs186.database.table.Schema;
 import java.util.List;
 
 /**
+ * "Recall that a "run" in the context of external mergesort is just a sequence of sorted records."
  * A run represents a section of space on disk that we can append records to or
  * read from. This is useful for external sorting to store records while we
  * aren't using them and free up memory. Automatically buffers reads and writes

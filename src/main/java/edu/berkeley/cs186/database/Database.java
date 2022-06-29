@@ -188,7 +188,7 @@ public class Database implements AutoCloseable {
 
         diskSpaceManager = new DiskSpaceManagerImpl(fileDir, recoveryManager);
         bufferManager = new BufferManager(diskSpaceManager, recoveryManager, numMemoryPages,
-                                              policy);
+                policy);
 
         // create log partition
         if (!initialized) diskSpaceManager.allocPart(0);
@@ -241,7 +241,7 @@ public class Database implements AutoCloseable {
         PageDirectory tableInfoPageDir = new PageDirectory(bufferManager, 1, tableInfoPage0, (short) 0,
                 tableInfoContext);
         tableMetadata = new Table(TABLE_INFO_TABLE_NAME, getTableInfoSchema(), tableInfoPageDir,
-                              tableInfoContext, stats);
+                tableInfoContext, stats);
     }
 
     // create _metadata.indices
@@ -250,7 +250,7 @@ public class Database implements AutoCloseable {
         diskSpaceManager.allocPage(indexInfoPage0);
         LockContext indexInfoContext =  new DummyLockContext("_dummyIndexInfo");
         PageDirectory pageDirectory = new PageDirectory(bufferManager, 2, indexInfoPage0, (short) 0,
-                                              indexInfoContext);
+                indexInfoContext);
         indexMetadata = new Table(INDEX_INFO_TABLE_NAME, getIndexInfoSchema(), pageDirectory, indexInfoContext, stats);
     }
 
@@ -270,7 +270,7 @@ public class Database implements AutoCloseable {
         PageDirectory indexInfoPageDir = new PageDirectory(bufferManager, 2,
                 DiskSpaceManager.getVirtualPageNum(2, 0), (short) 0, indexInfoContext);
         indexMetadata = new Table(INDEX_INFO_TABLE_NAME, getIndexInfoSchema(), indexInfoPageDir,
-                              indexInfoContext, stats);
+                indexInfoContext, stats);
         indexMetadata.setFullPageRecords();
     }
 
@@ -704,7 +704,7 @@ public class Database implements AutoCloseable {
             } else {
                 try {
                     return new SortOperator(this, new SequentialScanOperator(this, tableName),
-                        columnName).iterator();
+                            columnName).iterator();
                 } catch (Exception e2) {
                     throw new DatabaseException(e2);
                 }
@@ -895,8 +895,8 @@ public class Database implements AutoCloseable {
             Schema qualified = new Schema();
             for (int i = 0; i < schema.size(); i++) {
                 qualified.add(
-                    tableName + "." + schema.getFieldName(i),
-                    schema.getFieldType(i)
+                        tableName + "." + schema.getFieldName(i),
+                        schema.getFieldType(i)
                 );
             }
             return qualified;
@@ -932,7 +932,38 @@ public class Database implements AutoCloseable {
         public void close() {
             try {
                 // TODO(proj4_part2)
-                return;
+                // 此时2PL的phrase阶段已经结束 要开始以一定的顺序释放锁
+                // 获取当前事务所有的锁, LockContext中numChildren==0就是叶子, 从底层向上bfs
+//                Deque<LockContext> q = new ArrayDeque<>();
+//                List<Lock> locks = lockManager.getLocks(this);
+//                for (Lock lock : locks) {
+//                    ResourceName name = lock.name;
+//                    LockContext lc = LockContext.fromResourceName(lockManager, name);
+//                    if (lc.getNumChildren(this) == 0) {
+//                        q.addLast(lc);
+//                    }
+//                }
+//                // bfs 向上
+//                while (q.size() > 0) {
+//                    LockContext h = q.getFirst();
+//                    q.removeFirst();
+//                    h.release(this);
+//                    if (h.parentContext() != null && !q.contains(h.parentContext())) {
+//                        q.addLast(h.parentContext());
+//                    }
+//                }
+                // TODO(proj4_part2)
+                List<Lock> locks = lockManager.getLocks(this);
+                // 按照数据库层级由低到高排序
+                locks.sort(new Comparator<Lock>() {
+                    @Override
+                    public int compare(Lock o1, Lock o2) {
+                        return o1.name.resourceLevel() - o2.name.resourceLevel();
+                    }
+                });
+                for (int i = locks.size() - 1; i >= 0; i--) {
+                    LockContext.fromResourceName(lockManager, locks.get(i).name).release(this);
+                }
             } catch (Exception e) {
                 // There's a chance an error message from your release phase
                 // logic can get suppressed. This guarantees that the stack
@@ -1182,7 +1213,7 @@ public class Database implements AutoCloseable {
         public void update(String tableName, String targetColumnName, UnaryOperator<DataBox> targetValue,
                            String predColumnName, PredicateOperator predOperator, DataBox predValue) {
             transactionContext.updateRecordWhere(tableName, targetColumnName, targetValue, predColumnName,
-                                                    predOperator, predValue);
+                    predOperator, predValue);
         }
 
         @Override
@@ -1261,54 +1292,54 @@ public class Database implements AutoCloseable {
      * @return true if the table already existed in the database, false otherwise
      */
     public boolean loadCSV(String name) throws IOException {
-            InputStream is = Database.class.getClassLoader().getResourceAsStream(name + ".csv");
-            InputStreamReader reader = new InputStreamReader(is, StandardCharsets.UTF_8);
-            BufferedReader buffered = new BufferedReader(reader);
-            String[] header = buffered.readLine().split(",");
-            Schema schema = new Schema();
-            for (int i = 0; i < header.length; i++) {
-                String[] parts = header[i].split(" ", 2);
-                // Must have at least one space separating field and type
-                assert parts.length == 2;
-                String fieldName = parts[0];
-                Type fieldType = Type.fromString(parts[1]);
-                schema.add(fieldName, fieldType);
+        InputStream is = Database.class.getClassLoader().getResourceAsStream(name + ".csv");
+        InputStreamReader reader = new InputStreamReader(is, StandardCharsets.UTF_8);
+        BufferedReader buffered = new BufferedReader(reader);
+        String[] header = buffered.readLine().split(",");
+        Schema schema = new Schema();
+        for (int i = 0; i < header.length; i++) {
+            String[] parts = header[i].split(" ", 2);
+            // Must have at least one space separating field and type
+            assert parts.length == 2;
+            String fieldName = parts[0];
+            Type fieldType = Type.fromString(parts[1]);
+            schema.add(fieldName, fieldType);
+        }
+        List<Record> rows = new ArrayList<>();
+        String row = buffered.readLine();
+        while (row != null) {
+            String[] values = row.split(",");
+            List<DataBox> parsed = new ArrayList<>();
+            assert values.length == schema.size();
+            for (int i = 0; i < values.length; i++) {
+                parsed.add(DataBox.fromString(schema.getFieldType(i), values[i]));
             }
-            List<Record> rows = new ArrayList<>();
-            String row = buffered.readLine();
-            while (row != null) {
-                String[] values = row.split(",");
-                List<DataBox> parsed = new ArrayList<>();
-                assert values.length == schema.size();
-                for (int i = 0; i < values.length; i++) {
-                    parsed.add(DataBox.fromString(schema.getFieldType(i), values[i]));
-                }
-                rows.add(new Record(parsed));
-                row = buffered.readLine();
-            }
+            rows.add(new Record(parsed));
+            row = buffered.readLine();
+        }
 
-            try(Transaction t = beginTransaction()) {
-                t.createTable(schema, name);
-            } catch (DatabaseException e) {
-                if (e.getMessage().contains("already exists")) return true;
-                throw e;
-            }
+        try(Transaction t = beginTransaction()) {
+            t.createTable(schema, name);
+        } catch (DatabaseException e) {
+            if (e.getMessage().contains("already exists")) return true;
+            throw e;
+        }
 
-            // store table stats before inserting rows
-            Pair<RecordId, TableMetadata> pair = this.getTableMetadata(name);
-            if (pair == null) {
-                throw new DatabaseException("Table `" + name + "` does not exist!");
-            }
-            Table tb = tableFromMetadata(pair.getSecond());
+        // store table stats before inserting rows
+        Pair<RecordId, TableMetadata> pair = this.getTableMetadata(name);
+        if (pair == null) {
+            throw new DatabaseException("Table `" + name + "` does not exist!");
+        }
+        Table tb = tableFromMetadata(pair.getSecond());
 
-            try (Transaction t = beginTransaction()) {
-                for (Record r : rows) {
-                    t.insert(name, r);
-                }
+        try (Transaction t = beginTransaction()) {
+            for (Record r : rows) {
+                t.insert(name, r);
             }
+        }
 
-            // refresh histograms so that query cost estimation works
-            tb.buildStatistics(10);
-            return false;
+        // refresh histograms so that query cost estimation works
+        tb.buildStatistics(10);
+        return false;
     }
 }
