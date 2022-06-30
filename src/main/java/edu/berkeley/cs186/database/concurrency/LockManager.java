@@ -101,8 +101,8 @@ public class LockManager {
         //updateLock的时候 旧锁不是release 而是从两个hash表删除即可 不需要处理waitingQueue
         public void grantOrUpdateLock(Lock lock) {
             // TODO(proj4_part1): implement
-            assert(!locks.contains(lock) && checkCompatible(lock.lockType, lock.transactionNum));
-
+            assert(!locks.contains(lock));
+            assert(checkCompatible(lock.lockType, lock.transactionNum));
             // 删除resource上的旧锁
             locks.removeIf(oldLock -> Objects.equals(lock.transactionNum,
                     oldLock.transactionNum));
@@ -127,6 +127,14 @@ public class LockManager {
             //维护队列
             processQueue();
         }
+        //不处理waitingQueue
+        public void naiveReleaseLock(Lock lock) {
+            assert(locks.contains(lock));
+            //维护 对象->锁 的hash表
+            locks.remove(lock);
+            //维护一下 事务->锁 的hash表
+            processTransactionLocks(lock, true);
+        }
         /**
          * Adds `request` to the front of the queue if addFront is true, or to
          * the end otherwise.
@@ -150,29 +158,20 @@ public class LockManager {
                 LockRequest request = requests.next();
                 Lock lockToGranted = request.lock;
                 if (checkCompatible(lockToGranted.lockType, lockToGranted.transactionNum)) {
-                    // 释放请求
+                    //释放请求
+                    //此处不该产生递归调用processQueue
+                    //这里可能有隐式的lock update, 比如之前已经存在锁S，队列中有一个请求锁X
+                    //不去调用外部的release,promote,acquire,acquireAndRelease 因为会产生递归调用processQueue
                     for (Lock lockToRelease : request.releasedLocks) {
                         //请求释放的锁有存在于当前resource的locks中
-                        //递归去处理队列 单纯地释放锁就好
+                        //不用递归去处理waitingQueue 单纯地释放锁就好
                         if (this.locks.contains(lockToRelease)) {
-                           release(request.transaction, request.lock.name);
+                           this.naiveReleaseLock(lockToRelease);
                         }
                     }
                     // 授予锁
                     grantOrUpdateLock(lockToGranted);
-                    /* 不能用acquireAndRelease 可能会产生duplicate exception
-                    已经有一个S 再次请求一个X 此时属于upgrade的情况, 在acquireAndRelease会抛异常
-                    List<ResourceName> releaseNames = new ArrayList<>();
-                    for (Lock lockToRelease : request.releasedLocks) {
-                        releaseNames.add(lockToRelease.name);
-                    }
-                    acquireAndRelease(request.transaction,
-                            lockToGranted.name, lockToGranted.lockType,
-                            releaseNames);*/
-
-                    // 出队 更新队列
                     waitingQueue.removeFirst();
-                    // 入队表示该事务的请求被挂起 事务被锁住 所以出队的时候要将事务解锁
                     request.transaction.unblock();
                 }
                 else {
