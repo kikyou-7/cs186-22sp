@@ -139,8 +139,6 @@ public class LockContext {
             throw new UnsupportedOperationException("readonly!");
         }
         if (numChildLocks.getOrDefault(transaction.getTransNum(), 0) > 0) {
-//            System.out.println(this.toString());
-//            System.out.println(transaction.toString());
             throw new InvalidLockException("violate multigranularity locking constraints");
         }
         lockman.release(transaction, this.name);

@@ -672,6 +672,9 @@ public class QueryPlan {
         //      calculate the cheapest join with the new table (the one you
         //      fetched an operator for from pass1Map) and the previously joined
         //      tables. Then, update the result map if needed.
+        // 枚举左表prevMap 每个set状态
+        // 枚举连表谓词 check左表或右表是否在当前枚举的prevMap set中
+        // 分类讨论左表 右表的情况
         Map<Set<String>, QueryOperator> result = new HashMap<>();
         for (Set<String> tables : prevMap.keySet()) {
             for (JoinPredicate join : joinPredicates) {
@@ -685,6 +688,7 @@ public class QueryPlan {
                     QueryOperator tempOP = null;
                     if (tables.contains(leftTableName)) {
                         newTables.add(rightTableName);
+                        // 枚举所有的连表方式 找到并返回连表最小IO的操作符
                         tempOP = minCostJoinType(prevMap.get(tables),
                                 pass1Map.get(newTables), leftCol, rightCol);
                     }

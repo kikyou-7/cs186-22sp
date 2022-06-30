@@ -103,9 +103,10 @@ public class LockManager {
             // TODO(proj4_part1): implement
             assert(!locks.contains(lock) && checkCompatible(lock.lockType, lock.transactionNum));
 
-            // 维护 对象->锁 的hash表
+            // 删除resource上的旧锁
             locks.removeIf(oldLock -> Objects.equals(lock.transactionNum,
                     oldLock.transactionNum));
+            // 给resource加上新锁
             locks.add(lock);
             // 维护 事务->锁 的hash表 加入或删除lock
             // 如果是promote的话,这里不会删除旧锁 需要在promote方法中删除
@@ -267,14 +268,12 @@ public class LockManager {
             }
             //只要不冲突就授予锁，优先度高于队列中的请求
             if (resourceEntry.checkCompatible(lockType, transNum)) {
-                //先授予锁 释放的时候要避开当前的source
-                resourceEntry.grantOrUpdateLock(lock);
-                //再释放
+                //先释放 因为promote的时候要删除旧锁
                 for (ResourceName name1 : releaseNames) {
-                    //如果不存在对应的锁 会抛出异常
-                    if (name1 == name) continue;
                     release(transaction, name1);
                 }
+                // 再授予锁
+                resourceEntry.grantOrUpdateLock(lock);
             }
             else {
                 shouldBlock = true;
@@ -396,7 +395,6 @@ public class LockManager {
             ResourceEntry resourceEntry = getResourceEntry(name);
             LockType typeExist = getLockType(transaction, name);
             Lock lock = new Lock(name, newLockType, transNum);
-            List<Lock> locks = getLocks(transaction);
             //如果不存在锁
             if (typeExist == LockType.NL) {
                 throw new NoLockHeldException("NoLockHeld when promote!");
@@ -411,12 +409,15 @@ public class LockManager {
             }
             //可以请求锁
             if (resourceEntry.checkCompatible(newLockType, transNum)) {
-                resourceEntry.grantOrUpdateLock(lock);
-                //隐式地把旧锁删掉, resource中的信息也已经在上一行调用中隐式维护了
-                locks.remove(new Lock(name, typeExist, transNum));
-                transactionLocks.get(transNum).remove(new Lock(name, typeExist, transNum));
-
-            } else {
+                List<ResourceName> release = new ArrayList<>();
+                release.add(name);
+                //旧锁的删除 会在AndRelease中进行
+                // promote应该视为一个原子性的过程
+                this.acquireAndRelease(transaction, name, newLockType,
+                        release);
+            }
+            //有冲突
+            else {
                 shouldBlock = true;
                 resourceEntry.addToQueue(new LockRequest(transaction, lock), true);
             }
@@ -449,6 +450,7 @@ public class LockManager {
     /**
      * Returns the list of locks held by `transaction`, in order of acquisition.
      */
+    //创建一个新的List 不能用来修改transactionLocks
     public synchronized List<Lock> getLocks(TransactionContext transaction) {
         return new ArrayList<>(transactionLocks.getOrDefault(transaction.getTransNum(),
                 Collections.emptyList()));

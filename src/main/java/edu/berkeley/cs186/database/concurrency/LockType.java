@@ -81,8 +81,7 @@ public enum LockType {
                 return parentLockType == IX
                         || parentLockType == SIX;
             case SIX:
-                return parentLockType == SIX
-                        || parentLockType == IX;
+                return parentLockType == IX;
             case NL:
                 return true;
             default: throw new UnsupportedOperationException("bad lock type");
