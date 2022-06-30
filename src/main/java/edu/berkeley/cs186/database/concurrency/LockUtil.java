@@ -94,8 +94,8 @@ public class LockUtil {
                                       LockContext lockContext, LockType requestType) {
         if (lockContext == null) return ;
         LockType explicitLockType = lockContext.getExplicitLockType(transaction);
-        // 原先的锁不可能是X SIX IX, X一定可以赋予隐式锁, SIX IX可以作为意向锁
-        // 只能是S IS NL中的一个
+        // 原先的锁不可能是X SIX IX, 因为X一定可以赋予隐式锁, SIX IX可以作为意向锁
+        // 所以explicitLockType只能是S IS NL中的一个
         if (explicitLockType.equals(LockType.X) || explicitLockType.equals(LockType.IX)
                 || explicitLockType.equals(LockType.SIX)) {
             return ;

@@ -265,6 +265,7 @@ public class LockContext {
         }
         LockType oldLockType = getExplicitLockType(transaction);
         List<ResourceName> resourceNameList = new ArrayList<>();
+        //本身的锁也要释放 因为是acquireAndRelease
         resourceNameList.add(this.name);
         //后代的锁必须全部释放
         List<ResourceName> desc = getAllDescendants(transaction);
@@ -282,6 +283,7 @@ public class LockContext {
             lockman.acquireAndRelease(transaction, this.getResourceName(),
                     newLockType, resourceNameList);
         }
+        //枚举后代节点 维护祖先信息
         for (ResourceName descName : desc) {
             LockContext d = fromResourceName(lockman, descName);
             if (d.parentContext() != null){
