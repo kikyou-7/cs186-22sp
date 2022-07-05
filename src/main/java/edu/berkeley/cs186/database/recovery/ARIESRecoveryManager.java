@@ -13,7 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
 /**
- * Implementation of ARIES.
+ * Implementation of ARIES. start!
  */
 public class ARIESRecoveryManager implements RecoveryManager {
     // Disk space manager.
