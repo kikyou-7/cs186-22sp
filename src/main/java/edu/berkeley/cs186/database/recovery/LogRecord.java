@@ -17,6 +17,8 @@ import java.util.function.Consumer;
 public abstract class LogRecord {
     // LSN of this record, or null if not set - this is not actually
     // stored on disk, and is only set by the log manager for convenience
+    //LSN在初始化的时候不会写值，而是加入disk中的log区后，才会根据物理地址得到对应的LSN
+    // 祥见 LogManager#appendToLog
     protected Long LSN;
     // type of this record
     protected LogType type;

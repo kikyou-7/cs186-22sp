@@ -165,6 +165,7 @@ public class LogManager implements Iterable<LogRecord>, AutoCloseable {
      * @param index index of the log record within the log page
      * @return LSN
      */
+    // new一条log之后,其LSN是根据物理位置决定的，由于物理位置连续,所以LSN就是全局连续的
     static long makeLSN(long pageNum, int index) {
         return DiskSpaceManager.getPageNum(pageNum) * 10000L + index;
     }

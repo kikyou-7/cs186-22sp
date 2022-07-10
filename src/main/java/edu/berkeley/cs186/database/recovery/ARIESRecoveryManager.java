@@ -93,18 +93,14 @@ public class ARIESRecoveryManager implements RecoveryManager {
     @Override
     public long commit(long transNum) {
         // TODO(proj5): implement
-        TransactionTableEntry transactionTableEntry = transactionTable.get(transNum);
-        // 更新ATT中事务的状态 -> COMMITTING
-        transactionTableEntry.transaction.setStatus(Transaction.Status.COMMITTING);
         // 写一条committing日志 并更新事务的lastLSN
-        long preLSN = transactionTableEntry.lastLSN;
-        LogRecord logRecorde = new CommitTransactionLogRecord(transNum, preLSN);
-        logManager.appendToLog(logRecorde);
-        transactionTableEntry.lastLSN = logRecorde.getLSN();
-        transactionTable.put(transNum, transactionTableEntry);
+        long preLSN = transactionTable.get(transNum).lastLSN;
+        LogRecord logRecord = new CommitTransactionLogRecord(transNum, preLSN);
+        transactionTable.get(transNum).lastLSN = logManager.appendToLog(logRecord);
+        transactionTable.get(transNum).transaction.setStatus(Transaction.Status.COMMITTING);
         // 返回前 让日志刷盘
-        logManager.flushToLSN(logRecorde.getLSN());
-        return transactionTableEntry.lastLSN;
+        logManager.flushToLSN(transactionTable.get(transNum).lastLSN);
+        return transactionTable.get(transNum).lastLSN;
     }
 
     /**
@@ -127,10 +123,8 @@ public class ARIESRecoveryManager implements RecoveryManager {
         // 写一条ABORTING日志 并更新事务的lastLSN
         long preLSN = transactionEntry.lastLSN;
         LogRecord logRecorde = new AbortTransactionLogRecord(transNum, preLSN);
-        logManager.appendToLog(logRecorde);
-        transactionEntry.lastLSN = logRecorde.getLSN();
+        transactionEntry.lastLSN = logManager.appendToLog(logRecorde);
         transactionTable.put(transNum, transactionEntry);
-
         return transactionEntry.lastLSN;
     }
 
@@ -163,8 +157,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
         // 写一条EndTransaction record日志 并更新事务的lastLSN
         long preLSN = transactionEntry.lastLSN;
         LogRecord logRecorde = new EndTransactionLogRecord(transNum, preLSN);
-        logManager.appendToLog(logRecorde);
-        transactionEntry.lastLSN = logRecorde.getLSN();
+        transactionEntry.lastLSN = logManager.appendToLog(logRecorde);
         //最后要remove
         this.transactionTable.remove(transNum);
         return transactionEntry.lastLSN;
@@ -203,9 +196,8 @@ public class ARIESRecoveryManager implements RecoveryManager {
             if (currentRecord.isUndoable()) {
                 // 细节 CLR的preLSN是所属事务的lastLSN
                 LogRecord clr = currentRecord.undo(lastRecordLSN);
-                logManager.appendToLog(clr);
                 // 维护lastRecordLSN
-                lastRecordLSN = clr.getLSN();
+                lastRecordLSN = logManager.appendToLog(clr);
                 clr.redo(this, diskSpaceManager, bufferManager);
             }
             // 小优化 如果currentRecord是CLR 会跳到上次未被回滚处 否则 跳到当前log的preLSN
@@ -259,12 +251,25 @@ public class ARIESRecoveryManager implements RecoveryManager {
      * @return LSN of last record written to log
      */
     @Override
+    // 写在buffer page中 所以日志不需要刷盘
     public long logPageWrite(long transNum, long pageNum, short pageOffset, byte[] before,
                              byte[] after) {
         assert (before.length == after.length);
         assert (before.length <= BufferManager.EFFECTIVE_PAGE_SIZE / 2);
         // TODO(proj5): implement
-        return -1L;
+        TransactionTableEntry transactionEntry = transactionTable.get(transNum);
+        assert (transactionEntry != null);
+        long preLSN = transactionEntry.lastLSN;
+        LogRecord logRecord = new UpdatePageLogRecord(transNum, pageNum, preLSN, pageOffset,
+                before, after);
+        long LSN = logManager.appendToLog(logRecord);
+        transactionTable.get(transNum).lastLSN = LSN;
+        // 如果之前刷过盘, 即：不存在与DPT中，那么就更新上去
+        if (!dirtyPageTable.containsKey(pageNum)) {
+            dirtyPageTable.put(pageNum, LSN);
+        }
+        //不需要刷盘
+        return LSN;
     }
 
     /**
