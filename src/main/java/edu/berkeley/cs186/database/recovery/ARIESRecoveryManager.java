@@ -80,7 +80,6 @@ public class ARIESRecoveryManager implements RecoveryManager {
     public synchronized void startTransaction(Transaction transaction) {
         this.transactionTable.put(transaction.getTransNum(), new TransactionTableEntry(transaction));
     }
-
     /**
      * Called when a transaction is about to start committing.
      *
@@ -90,10 +89,22 @@ public class ARIESRecoveryManager implements RecoveryManager {
      * @param transNum transaction being committed
      * @return LSN of the commit record
      */
+    //set TXN' status to COMMITTING; update the TXN' lastLSN; update the ATT; flush the log before return
     @Override
     public long commit(long transNum) {
         // TODO(proj5): implement
-        return -1L;
+        TransactionTableEntry transactionTableEntry = transactionTable.get(transNum);
+        // 更新ATT中事务的状态 -> COMMITTING
+        transactionTableEntry.transaction.setStatus(Transaction.Status.COMMITTING);
+        // 写一条committing日志 并更新事务的lastLSN
+        long preLSN = transactionTableEntry.lastLSN;
+        LogRecord logRecorde = new CommitTransactionLogRecord(transNum, preLSN);
+        logManager.appendToLog(logRecorde);
+        transactionTableEntry.lastLSN = logRecorde.getLSN();
+        transactionTable.put(transNum, transactionTableEntry);
+        // 返回前 让日志刷盘
+        logManager.flushToLSN(logRecorde.getLSN());
+        return transactionTableEntry.lastLSN;
     }
 
     /**
@@ -106,10 +117,21 @@ public class ARIESRecoveryManager implements RecoveryManager {
      * @param transNum transaction being aborted
      * @return LSN of the abort record
      */
+    //set TXN' status to ABORTING ; update the TXN' lastLSN; update the ATT
     @Override
     public long abort(long transNum) {
         // TODO(proj5): implement
-        return -1L;
+        TransactionTableEntry transactionEntry = transactionTable.get(transNum);
+        // 更新ATT中事务的状态 -> ABORTING
+        transactionEntry.transaction.setStatus(Transaction.Status.ABORTING);
+        // 写一条ABORTING日志 并更新事务的lastLSN
+        long preLSN = transactionEntry.lastLSN;
+        LogRecord logRecorde = new AbortTransactionLogRecord(transNum, preLSN);
+        logManager.appendToLog(logRecorde);
+        transactionEntry.lastLSN = logRecorde.getLSN();
+        transactionTable.put(transNum, transactionEntry);
+
+        return transactionEntry.lastLSN;
     }
 
     /**
@@ -127,7 +149,25 @@ public class ARIESRecoveryManager implements RecoveryManager {
     @Override
     public long end(long transNum) {
         // TODO(proj5): implement
-        return -1L;
+        TransactionTableEntry transactionEntry = transactionTable.get(transNum);
+        //如果是ABORTING 需要rollBack 回溯找到事务的第一条log
+        if (transactionEntry.transaction.getStatus().equals(Transaction.Status.ABORTING)) {
+            LogRecord firstLog = logManager.fetchLogRecord(transactionEntry.lastLSN);
+            while (firstLog.getPrevLSN().isPresent()) {
+                firstLog = logManager.fetchLogRecord(firstLog.getPrevLSN().get());
+            }
+            this.rollbackToLSN(transNum, firstLog.getLSN());
+        }
+        // 更新ATT中事务的状态 -> complete
+        transactionEntry.transaction.setStatus(Transaction.Status.COMPLETE);
+        // 写一条EndTransaction record日志 并更新事务的lastLSN
+        long preLSN = transactionEntry.lastLSN;
+        LogRecord logRecorde = new EndTransactionLogRecord(transNum, preLSN);
+        logManager.appendToLog(logRecorde);
+        transactionEntry.lastLSN = logRecorde.getLSN();
+        //最后要remove
+        this.transactionTable.remove(transNum);
+        return transactionEntry.lastLSN;
     }
 
     /**
@@ -147,14 +187,33 @@ public class ARIESRecoveryManager implements RecoveryManager {
      * @param transNum transaction to perform a rollback for
      * @param LSN LSN to which we should rollback
      */
+    // 每undo一条操作 就写一条对应的CLR 更新事务的lastRecordLSN 最后记得更新ATT
     private void rollbackToLSN(long transNum, long LSN) {
         TransactionTableEntry transactionEntry = transactionTable.get(transNum);
         LogRecord lastRecord = logManager.fetchLogRecord(transactionEntry.lastLSN);
+        //该事务的最后一条日志,写CLR后要维护
         long lastRecordLSN = lastRecord.getLSN();
         // Small optimization: if the last record is a CLR we can start rolling
         // back from the next record that hasn't yet been undone.
         long currentLSN = lastRecord.getUndoNextLSN().orElse(lastRecordLSN);
         // TODO(proj5) implement the rollback logic described above
+        LogRecord currentRecord;
+        while (currentLSN > LSN) {
+            currentRecord = logManager.fetchLogRecord(currentLSN);
+            if (currentRecord.isUndoable()) {
+                // 细节 CLR的preLSN是所属事务的lastLSN
+                LogRecord clr = currentRecord.undo(lastRecordLSN);
+                logManager.appendToLog(clr);
+                // 维护lastRecordLSN
+                lastRecordLSN = clr.getLSN();
+                clr.redo(this, diskSpaceManager, bufferManager);
+            }
+            // 小优化 如果currentRecord是CLR 会跳到上次未被回滚处 否则 跳到当前log的preLSN
+            currentLSN = currentRecord.getUndoNextLSN().orElse(
+                    currentRecord.getPrevLSN().orElse((long) -1));
+        }
+        //更新ATT 此时transNum事务 已经全部回滚了,只有BEGIN和一堆CLR日志
+        transactionTable.get(transNum).lastLSN = lastRecordLSN;
     }
 
     /**

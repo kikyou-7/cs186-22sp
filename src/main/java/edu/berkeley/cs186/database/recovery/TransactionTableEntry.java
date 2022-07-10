@@ -6,7 +6,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
-
+//事务在本次运行过程中，存档点 lastLSN
 class TransactionTableEntry {
     // Transaction object for the transaction.
     Transaction transaction;
