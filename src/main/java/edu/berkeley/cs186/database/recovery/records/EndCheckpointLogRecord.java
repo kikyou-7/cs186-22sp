@@ -12,7 +12,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-
+// ENDCheckpointLogRecord 中会保存此刻的ATT DPT，并且刷盘
 public class EndCheckpointLogRecord extends LogRecord {
     private Map<Long, Long> dirtyPageTable;
     private Map<Long, Pair<Transaction.Status, Long>> transactionTable;
@@ -67,6 +67,7 @@ public class EndCheckpointLogRecord extends LogRecord {
      * @return boolean indicating whether information for
      * the log record can fit in one record on a page
      */
+    // EndCheckpointLogRecord中 有x条DPTRecord  y条ATTRecord endLog的大小不能超过1page
     public static boolean fitsInOneRecord(int numDPTRecords, int numTxnTableRecords) {
         int recordSize = getRecordSize(numDPTRecords, numTxnTableRecords);
         return recordSize <= DiskSpaceManager.PAGE_SIZE;

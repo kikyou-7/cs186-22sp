@@ -2,10 +2,8 @@ package edu.berkeley.cs186.database.recovery;
 
 import edu.berkeley.cs186.database.Transaction;
 import edu.berkeley.cs186.database.common.Pair;
-import edu.berkeley.cs186.database.concurrency.DummyLockContext;
 import edu.berkeley.cs186.database.io.DiskSpaceManager;
 import edu.berkeley.cs186.database.memory.BufferManager;
-import edu.berkeley.cs186.database.memory.Page;
 import edu.berkeley.cs186.database.recovery.records.*;
 
 import java.util.*;
@@ -98,7 +96,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
         LogRecord logRecord = new CommitTransactionLogRecord(transNum, preLSN);
         transactionTable.get(transNum).lastLSN = logManager.appendToLog(logRecord);
         transactionTable.get(transNum).transaction.setStatus(Transaction.Status.COMMITTING);
-        // 返回前 让日志刷盘
+        // 返回前 让日志刷盘 因为commit的本质就是日志落盘
         logManager.flushToLSN(transactionTable.get(transNum).lastLSN);
         return transactionTable.get(transNum).lastLSN;
     }
@@ -115,6 +113,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
      */
     //set TXN' status to ABORTING ; update the TXN' lastLSN; update the ATT
     @Override
+    // start to abort ，no need to remove the TXN from ATT
     public long abort(long transNum) {
         // TODO(proj5): implement
         TransactionTableEntry transactionEntry = transactionTable.get(transNum);
@@ -437,6 +436,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
      * @param name name of savepoint
      */
     @Override
+    // 调用rollbackToLSN即可
     public void rollbackToSavepoint(long transNum, String name) {
         TransactionTableEntry transactionEntry = transactionTable.get(transNum);
         assert (transactionEntry != null);
@@ -445,6 +445,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
         long savepointLSN = transactionEntry.getSavepoint(name);
 
         // TODO(proj5): implement
+        rollbackToLSN(transNum, savepointLSN);
         return;
     }
 
@@ -467,18 +468,57 @@ public class ARIESRecoveryManager implements RecoveryManager {
         // Create begin checkpoint log record and write to log
         LogRecord beginRecord = new BeginCheckpointLogRecord();
         long beginLSN = logManager.appendToLog(beginRecord);
-
         Map<Long, Long> chkptDPT = new HashMap<>();
         Map<Long, Pair<Transaction.Status, Long>> chkptTxnTable = new HashMap<>();
-
         // TODO(proj5): generate end checkpoint record(s) for DPT and transaction table
-
+        // 维护一下DPT ATT信息，相当于拷贝一份给ENDchekckpointLog
+        // 但是由于ATT DPT信息可能太多了, 1个page装不下 需要在即将装满后就刷盘
         // Last end checkpoint record
+        int dptEntries = 0, ATTEntries = 0; // 维护临时哈希表中的条目大小
+        int cnt = 0;// 刷盘的endLog数量，保证不为0 即使两个表都空 也要写进去
+        for (long id : dirtyPageTable.keySet()) {
+            if (EndCheckpointLogRecord.fitsInOneRecord(dptEntries + 1, ATTEntries)) {
+                chkptDPT.put(id, dirtyPageTable.get(id));
+                dptEntries++;
+                continue;
+            }
+            // 不能加了 刷盘后再加
+            LogRecord endRecord = new EndCheckpointLogRecord(chkptDPT, chkptTxnTable);
+            chkptDPT.clear();
+            logManager.appendToLog(endRecord);
+            flushToLSN(endRecord.getLSN());
+            cnt++;
+            dptEntries = 0;
+
+            chkptDPT.put(id, dirtyPageTable.get(id));
+            dptEntries++;
+        }
+        // 此时chkptDPT中也许还有entries 继续添加ATT entry直至填满
+        for (long id : transactionTable.keySet()) {
+            // 对应的条目
+            Pair<Transaction.Status, Long> t = new Pair<>(transactionTable.get(id).transaction.getStatus(),
+                    transactionTable.get(id).lastLSN);
+            if (EndCheckpointLogRecord.fitsInOneRecord(dptEntries, ATTEntries + 1)) {
+                chkptTxnTable.put(id, t);
+                ATTEntries++;
+                continue;
+            }
+            // 不能加了 刷盘后再加
+            LogRecord endRecord = new EndCheckpointLogRecord(chkptDPT, chkptTxnTable);
+            chkptDPT.clear();
+            chkptTxnTable.clear();
+            logManager.appendToLog(endRecord);
+            flushToLSN(endRecord.getLSN());
+            cnt++;
+            ATTEntries = 0;
+            dptEntries = 0;
+            chkptTxnTable.put(id, t);
+            ATTEntries++;
+        }
+        // 此时 要么cnt==0, 要么还有ATT DPT条目剩余 没有刷盘
         LogRecord endRecord = new EndCheckpointLogRecord(chkptDPT, chkptTxnTable);
         logManager.appendToLog(endRecord);
-        // Ensure checkpoint is fully flushed before updating the master record
         flushToLSN(endRecord.getLSN());
-
         // Update master record
         MasterLogRecord masterRecord = new MasterLogRecord(beginLSN);
         logManager.rewriteMasterRecord(masterRecord);
