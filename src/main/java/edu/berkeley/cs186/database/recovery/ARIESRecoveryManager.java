@@ -614,16 +614,17 @@ public class ARIESRecoveryManager implements RecoveryManager {
      *  - if RECOVERY_ABORTING: no action needed
      */
     void restartAnalysis() {
-        // Read master record
+        // Read master record, master record LSN 就是0
         LogRecord record = logManager.fetchLogRecord(0L);
         // Type checking
         assert (record != null && record.getType() == LogType.MASTER);
         MasterLogRecord masterRecord = (MasterLogRecord) record;
-        // Get start checkpoint LSN
+        // Get start checkpoint LSN 上一次checkpoint处
         long LSN = masterRecord.lastCheckpointLSN;
         // Set of transactions that have completed
         Set<Long> endedTransactions = new HashSet<>();
         // TODO(proj5): implement
+
         return;
     }
 
