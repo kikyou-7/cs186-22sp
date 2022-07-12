@@ -2,8 +2,10 @@ package edu.berkeley.cs186.database.recovery;
 
 import edu.berkeley.cs186.database.Transaction;
 import edu.berkeley.cs186.database.common.Pair;
+import edu.berkeley.cs186.database.concurrency.DummyLockContext;
 import edu.berkeley.cs186.database.io.DiskSpaceManager;
 import edu.berkeley.cs186.database.memory.BufferManager;
+import edu.berkeley.cs186.database.memory.Page;
 import edu.berkeley.cs186.database.recovery.records.*;
 
 import java.util.*;
@@ -565,6 +567,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
      * buffer manager) between redo and undo, and perform a checkpoint after
      * undo.
      */
+    //故障后重启的过程
     @Override
     public void restart() {
         this.restartAnalysis();
@@ -596,6 +599,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
         else if (logRecord.getType().equals(LogType.END_TRANSACTION)) {
             transactionEntry.transaction.cleanup();
             transactionEntry.transaction.setStatus(Transaction.Status.COMPLETE);
+            assert(logRecord.getTransNum().isPresent());
             endedTransactions.add(logRecord.getTransNum().get());
             transactionTable.remove(logRecord.getTransNum().get());
         }
@@ -653,6 +657,10 @@ public class ARIESRecoveryManager implements RecoveryManager {
      *    record
      *  - if RECOVERY_ABORTING: no action needed
      */
+    // 从最近一次存档点BEGIN日志开始遍历日志队列
+    // 如果遇到END_CHKP, 需要把该record中的ATT DPT与当前内存的DPT ATT整合起来
+    // 遇到别的,如果对ATT DPT有影响，就要进行相应的维护
+    // 如果logRecord存在getTransNum (getTransNum is present), 就说明对ATT有影响，DPT同理
     void restartAnalysis() {
         // Read master record, master record LSN 就是0
         LogRecord record = logManager.fetchLogRecord(0L);
@@ -665,7 +673,6 @@ public class ARIESRecoveryManager implements RecoveryManager {
         Set<Long> endedTransactions = new HashSet<>();
         // TODO(proj5): implement
         Iterator<LogRecord> it = logManager.scanFrom(LSN);
-
         while (it.hasNext()) {
             LogRecord cur = it.next();
             // 特殊处理 将END_CHKP中的DPT ATT与内存中的整合起来
@@ -684,7 +691,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
                 // ATT
                 Map<Long, Pair<Transaction.Status, Long>> transTable = cur.getTransactionTable();
                 for (long transNum : transTable.keySet()) {
-                    // 如果END_CHKP中的ATT中的事务 不在此时内存ATT中，需要加上去
+                    // 如果END_CHKP中的ATT中的事务 不在内存ATT中，需要加上去
                     if (!transactionTable.containsKey(transNum)) {
                         Transaction t = newTransaction.apply(transNum);
                         // 记得先修改status 再加给ATT
@@ -692,8 +699,8 @@ public class ARIESRecoveryManager implements RecoveryManager {
                         this.startTransaction(t);
                         transactionTable.get(transNum).lastLSN = transTable.get(transNum).getSecond();
                     }
-                    // 更新lastLSN, status
-                    // 只要不是RUNNING 就一定可以更新对吧
+                    // 如果存在于内存ATT 更新lastLSN, status
+                    // status只要不是RUNNING 就一定可以更新对吧
                     else {
                         updateTXNLastLSN(transactionTable.get(transNum), transTable.get(transNum).getSecond());
                         if (!transTable.get(transNum).getFirst().equals(Transaction.Status.RUNNING)) {
@@ -704,6 +711,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
                 continue;
             }
             // 如果不会影响ATT DPT 就不用管
+            // 根据文档 这俩属性用来判断该日志是否对ATT DPT有影响
             if (!cur.getTransNum().isPresent() && !cur.getPageNum().isPresent()) {
                 continue;
             }
@@ -722,11 +730,13 @@ public class ARIESRecoveryManager implements RecoveryManager {
         // 遍历一下ATT 将COMMITTING 的事务结束, RUNNING的事务设为abort
         for (long transNum : transactionTable.keySet()) {
             TransactionTableEntry t = transactionTable.get(transNum);
+            //RUNNING -> RECOVERY_ABORTING
             if (t.transaction.getStatus().equals(Transaction.Status.RUNNING)) {
                 LogRecord logRecorde = new AbortTransactionLogRecord(transNum, t.lastLSN);
                 t.lastLSN = logManager.appendToLog(logRecorde);
                 t.transaction.setStatus(Transaction.Status.RECOVERY_ABORTING);
             }
+            //COMMITTING -> COMPLETE
             else if (t.transaction.getStatus().equals(Transaction.Status.COMMITTING)) {
                 // 需要手动clean up()
                 t.transaction.cleanup();
@@ -750,9 +760,50 @@ public class ARIESRecoveryManager implements RecoveryManager {
      *   the dirty page table with LSN >= recLSN, the page is fetched from disk,
      *   the pageLSN is checked, and the record is redone if needed.
      */
+    // 如果跟分区相关, redo
+    // allocate a page, redo
+    // modify a page, page in DPT && recLSN <= curLSN && diskPageLSN<curLSN, redo
+    // (page在DPT中, recLSN<=curLSN, 该page对应的磁盘中的page的pageLSN<curLSN
     void restartRedo() {
         // TODO(proj5): implement
-        return;
+        if (dirtyPageTable.isEmpty()) return ;
+        long startLSN = dirtyPageTable.values().iterator().next();
+        for (long recLSN : dirtyPageTable.values()) {
+            startLSN = Math.min(startLSN, recLSN);
+        }
+        Iterator<LogRecord> it = logManager.scanFrom(startLSN);
+        while (it.hasNext()) {
+            LogRecord cur = it.next();
+            switch (cur.getType()) {
+                case UNDO_UPDATE_PAGE:
+                case FREE_PAGE:
+                case UNDO_ALLOC_PAGE:
+                case UPDATE_PAGE:
+                    assert(cur.getPageNum().isPresent());
+                    if (dirtyPageTable.containsKey(cur.getPageNum().get())
+                    && dirtyPageTable.get(cur.getPageNum().get()) <= cur.getLSN()) {
+                        Page page = bufferManager.fetchPage(new DummyLockContext(), cur.getPageNum().get());
+                        boolean f = true;
+                        try {
+                            if (page.getPageLSN() >= cur.getLSN()) f = false;
+                        } finally {
+                            page.unpin();
+                        }
+                        if (f) {
+                            cur.redo(this, diskSpaceManager, bufferManager);
+                        }
+                    }
+                    break;
+                case ALLOC_PART:
+                case UNDO_FREE_PART:
+                case FREE_PART:
+                case UNDO_ALLOC_PART:
+                case ALLOC_PAGE:
+                case UNDO_FREE_PAGE:
+                    cur.redo(this, diskSpaceManager, bufferManager);
+                    break;
+            }
+        }
     }
 
     /**
@@ -768,9 +819,52 @@ public class ARIESRecoveryManager implements RecoveryManager {
      * - if the new LSN is 0, clean up the transaction, set the status to complete,
      *   and remove from transaction table.
      */
+    // 用优先队列进行多源bfs 每次取出最大的LSN 往上走一格 (undo一条操作前记得写CLR日志
     void restartUndo() {
         // TODO(proj5): implement
-        return;
+        // 官方给了比较器的实现,first是LSN, second是logRecord
+        Queue<Pair<Long, LogRecord>> q = new PriorityQueue<>(new PairFirstReverseComparator<>());
+        for (long id : transactionTable.keySet()) {
+            if (transactionTable.get(id).transaction.getStatus().equals(Transaction.Status.RECOVERY_ABORTING)) {
+                long lsn = transactionTable.get(id).lastLSN;
+                LogRecord logRecord = logManager.fetchLogRecord(lsn);
+                q.add(new Pair<>(lsn, logRecord));
+            }
+        }
+        while (q.size() > 0) {
+            Pair<Long, LogRecord> pk = q.poll();
+            LogRecord cur = pk.getSecond();
+            System.out.println("pop :" + cur.toString());
+            assert(cur.getTransNum().isPresent());
+            long lastLSN = transactionTable.get(cur.getTransNum().get()).lastLSN;
+            // UPDATE record, undo一下
+            if (cur.isUndoable()) {
+                LogRecord clr = cur.undo(lastLSN);
+                transactionTable.get(cur.getTransNum().get()).lastLSN = logManager.appendToLog(clr);
+                clr.redo(this, diskSpaceManager, bufferManager);
+            }
+            // 不是UPDATE, 如果undoNextLSN存在 就是CLR
+            long nextLSN = 0;
+            if (cur.getUndoNextLSN().isPresent()) {
+                nextLSN = cur.getUndoNextLSN().get();
+            }
+            else if (cur.getPrevLSN().isPresent()) {
+                nextLSN = cur.getPrevLSN().get();
+            }
+            // 该事务结束了,没有上一条了
+            if (nextLSN == 0) {
+                LogRecord end_TXN = new EndTransactionLogRecord(cur.getTransNum().get(), lastLSN);
+                transactionTable.get(cur.getTransNum().get()).lastLSN = logManager.appendToLog(end_TXN);
+                transactionTable.get(cur.getTransNum().get()).transaction.cleanup();
+                transactionTable.get(cur.getTransNum().get()).transaction.setStatus(
+                        Transaction.Status.COMPLETE);
+                transactionTable.remove(cur.getTransNum().get());
+            }
+            // 事务没结束
+            else {
+                q.add(new Pair<>(nextLSN, logManager.fetchLogRecord(nextLSN)));
+            }
+        }
     }
 
     /**
@@ -803,4 +897,5 @@ public class ARIESRecoveryManager implements RecoveryManager {
             return p1.getFirst().compareTo(p0.getFirst());
         }
     }
+
 }

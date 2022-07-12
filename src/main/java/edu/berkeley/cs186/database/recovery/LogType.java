@@ -1,5 +1,6 @@
 package edu.berkeley.cs186.database.recovery;
 
+// free, alloc 是对于buffer pool中的page而言的, 当脏页刷盘 需要free; 从磁盘读入数据，需要alloc
 public enum LogType {
     // master log record (stores current checkpoint)
     MASTER,
