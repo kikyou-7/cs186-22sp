@@ -28,6 +28,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
     // Dirty page table (page number -> recLSN).
     Map<Long, Long> dirtyPageTable = new ConcurrentHashMap<>();
     // Transaction table (transaction number -> entry).
+    // ATT中的事务只可能是RUNNING COMMITTING ABORTING RECOVERY_ABORTING 四种状态
     Map<Long, TransactionTableEntry> transactionTable = new ConcurrentHashMap<>();
     // true if redo phase of restart has terminated, false otherwise. Used
     // to prevent DPT entries from being flushed during restartRedo.
@@ -123,7 +124,6 @@ public class ARIESRecoveryManager implements RecoveryManager {
         long preLSN = transactionEntry.lastLSN;
         LogRecord logRecorde = new AbortTransactionLogRecord(transNum, preLSN);
         transactionEntry.lastLSN = logManager.appendToLog(logRecorde);
-        transactionTable.put(transNum, transactionEntry);
         return transactionEntry.lastLSN;
     }
 
@@ -140,6 +140,9 @@ public class ARIESRecoveryManager implements RecoveryManager {
      * @return LSN of the end record
      */
     @Override
+    // 正常运行的时候程序会自己调用end()
+    // 在clean up() 中调用end()
+    // 正常运行，end时 需要写一条END_TXN日志 将事务状态设为COMPLETE并移出ATT
     public long end(long transNum) {
         // TODO(proj5): implement
         TransactionTableEntry transactionEntry = transactionTable.get(transNum);
@@ -571,7 +574,44 @@ public class ARIESRecoveryManager implements RecoveryManager {
         this.restartUndo();
         this.checkpoint();
     }
-
+    private void updateTXNLastLSN(TransactionTableEntry transactionEntry, long LSN) {
+        transactionEntry.lastLSN = Math.max(transactionEntry.lastLSN, LSN);
+    }
+    //analysis phase, check the logRecord and update ATT
+    private void updateATTAndDPT(LogRecord logRecord, TransactionTableEntry transactionEntry,
+                           Set<Long> endedTransactions) {
+        long LSN = logRecord.getLSN();
+        updateTXNLastLSN(transactionEntry, LSN);
+        // TXN status
+        // COMMITTING
+        if (logRecord.getType().equals(LogType.COMMIT_TRANSACTION)) {
+            transactionEntry.transaction.setStatus(Transaction.Status.COMMITTING);
+        }
+        // 此时是在restart的时候 设为RECOVERY_ABORTING
+        else if (logRecord.getType().equals(LogType.ABORT_TRANSACTION)) {
+            transactionEntry.transaction.setStatus(Transaction.Status.RECOVERY_ABORTING);
+        }
+        // 事务 END, 状态设为COMPLETE并移出ATT
+        // 需要手动clean up()一下
+        else if (logRecord.getType().equals(LogType.END_TRANSACTION)) {
+            transactionEntry.transaction.cleanup();
+            transactionEntry.transaction.setStatus(Transaction.Status.COMPLETE);
+            endedTransactions.add(logRecord.getTransNum().get());
+            transactionTable.remove(logRecord.getTransNum().get());
+        }
+        if(logRecord.getPageNum().isPresent()) {
+            Long pageNum = logRecord.getPageNum().get();
+            if (logRecord.getType().equals(LogType.UPDATE_PAGE) || logRecord.getType().equals(LogType.UNDO_UPDATE_PAGE)) {
+                // 对Page进行了更新, 若DPT中不存在对应Page应该加入到DPT中
+                this.dirtyPageTable.putIfAbsent(pageNum, LSN);
+            }
+            if (logRecord.getType().equals(LogType.FREE_PAGE) ||logRecord.getType().equals(LogType.UNDO_ALLOC_PAGE)) {
+                // 相当于刷新了(删除了)Page, 也要从DPT中删掉
+                this.dirtyPageTable.remove(pageNum);
+            }
+            // don't need to do anything for AllocPage / UndoFreePage
+        }
+    }
     /**
      * This method performs the analysis pass of restart recovery.
      *
@@ -624,8 +664,78 @@ public class ARIESRecoveryManager implements RecoveryManager {
         // Set of transactions that have completed
         Set<Long> endedTransactions = new HashSet<>();
         // TODO(proj5): implement
+        Iterator<LogRecord> it = logManager.scanFrom(LSN);
 
-        return;
+        while (it.hasNext()) {
+            LogRecord cur = it.next();
+            // 特殊处理 将END_CHKP中的DPT ATT与内存中的整合起来
+            if (cur.getType().equals(LogType.END_CHECKPOINT)) {
+                // DPT
+                Map<Long, Long> checkpointDirtyPageTable = cur.getDirtyPageTable();
+                for (Long tranNum : checkpointDirtyPageTable.keySet()) {
+                    // 因为checkpoing记录的recLSN一定是最早的
+                    if (!dirtyPageTable.containsKey(tranNum)) {
+                        dirtyPageTable.put(tranNum, checkpointDirtyPageTable.get(tranNum));
+                    } else {
+                        dirtyPageTable.put(tranNum, Math.min(checkpointDirtyPageTable.get(tranNum), dirtyPageTable.get(tranNum)));
+                    }
+
+                }
+                // ATT
+                Map<Long, Pair<Transaction.Status, Long>> transTable = cur.getTransactionTable();
+                for (long transNum : transTable.keySet()) {
+                    // 如果END_CHKP中的ATT中的事务 不在此时内存ATT中，需要加上去
+                    if (!transactionTable.containsKey(transNum)) {
+                        Transaction t = newTransaction.apply(transNum);
+                        // 记得先修改status 再加给ATT
+                        t.setStatus(transTable.get(transNum).getFirst());
+                        this.startTransaction(t);
+                        transactionTable.get(transNum).lastLSN = transTable.get(transNum).getSecond();
+                    }
+                    // 更新lastLSN, status
+                    // 只要不是RUNNING 就一定可以更新对吧
+                    else {
+                        updateTXNLastLSN(transactionTable.get(transNum), transTable.get(transNum).getSecond());
+                        if (!transTable.get(transNum).getFirst().equals(Transaction.Status.RUNNING)) {
+                            transactionTable.get(transNum).transaction.setStatus(transTable.get(transNum).getFirst());
+                        }
+                    }
+                }
+                continue;
+            }
+            // 如果不会影响ATT DPT 就不用管
+            if (!cur.getTransNum().isPresent() && !cur.getPageNum().isPresent()) {
+                continue;
+            }
+            long transNum = cur.getTransNum().get();
+            // 事务不存在 new一个新事务
+            if (!transactionTable.containsKey(transNum)) {
+                Transaction t = newTransaction.apply(transNum);
+                t.setStatus(Transaction.Status.RUNNING);
+                this.startTransaction(t);
+                transactionTable.get(transNum).lastLSN = cur.getLSN();
+            }
+            if (endedTransactions.contains(transNum)) continue;
+            updateATTAndDPT(cur, transactionTable.get(transNum), endedTransactions);
+        }
+        // 此时已经扫描完了全部的log
+        // 遍历一下ATT 将COMMITTING 的事务结束, RUNNING的事务设为abort
+        for (long transNum : transactionTable.keySet()) {
+            TransactionTableEntry t = transactionTable.get(transNum);
+            if (t.transaction.getStatus().equals(Transaction.Status.RUNNING)) {
+                LogRecord logRecorde = new AbortTransactionLogRecord(transNum, t.lastLSN);
+                t.lastLSN = logManager.appendToLog(logRecorde);
+                t.transaction.setStatus(Transaction.Status.RECOVERY_ABORTING);
+            }
+            else if (t.transaction.getStatus().equals(Transaction.Status.COMMITTING)) {
+                // 需要手动clean up()
+                t.transaction.cleanup();
+                t.transaction.setStatus(Transaction.Status.COMPLETE);
+                this.transactionTable.remove(transNum);
+                LogRecord logRecorde = new EndTransactionLogRecord(transNum, t.lastLSN);
+                t.lastLSN = logManager.appendToLog(logRecorde);
+            }
+        }
     }
 
     /**
