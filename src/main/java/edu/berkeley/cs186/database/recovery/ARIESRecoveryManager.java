@@ -617,6 +617,21 @@ public class ARIESRecoveryManager implements RecoveryManager {
         }
     }
     /**
+     * util for judging the before and after for the Transaction Status
+     * @param status1
+     * @param status2
+     * @return status1 < status2
+     */
+    private boolean transactionStatusBefore (Transaction.Status status1, Transaction.Status status2) {
+        if (status1.equals(Transaction.Status.RUNNING)) {
+            return status2.equals(Transaction.Status.COMMITTING) || status2.equals(Transaction.Status.COMPLETE)|| status2.equals(Transaction.Status.ABORTING);
+        } else if (status1.equals(Transaction.Status.COMMITTING) || status1.equals(Transaction.Status.ABORTING)) {
+            return status2.equals(Transaction.Status.COMPLETE);
+        } else {
+            return false;
+        }
+    }
+    /**
      * This method performs the analysis pass of restart recovery.
      *
      * First, the master record should be read (LSN 0). The master record contains
@@ -670,6 +685,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
         // Get start checkpoint LSN 上一次checkpoint处
         long LSN = masterRecord.lastCheckpointLSN;
         // Set of transactions that have completed
+        // 由于COMPLETE之后会被移除ATT 所以需要额外一个表来记录一下 防止事务二次clean up()
         Set<Long> endedTransactions = new HashSet<>();
         // TODO(proj5): implement
         Iterator<LogRecord> it = logManager.scanFrom(LSN);
@@ -686,11 +702,16 @@ public class ARIESRecoveryManager implements RecoveryManager {
                     } else {
                         dirtyPageTable.put(tranNum, Math.min(checkpointDirtyPageTable.get(tranNum), dirtyPageTable.get(tranNum)));
                     }
-
                 }
                 // ATT
                 Map<Long, Pair<Transaction.Status, Long>> transTable = cur.getTransactionTable();
                 for (long transNum : transTable.keySet()) {
+                    // 已经COMPLETE的事务不需要加
+                    // 因为END_CHKP的ATT中的TXN可能已经COMPLETE了 此时如果
+                    if (endedTransactions.contains(transNum)) {
+                       // System.out.println("TXN COMPLETED:" + transNum);
+                        continue;
+                    }
                     // 如果END_CHKP中的ATT中的事务 不在内存ATT中，需要加上去
                     if (!transactionTable.containsKey(transNum)) {
                         Transaction t = newTransaction.apply(transNum);
@@ -700,11 +721,15 @@ public class ARIESRecoveryManager implements RecoveryManager {
                         transactionTable.get(transNum).lastLSN = transTable.get(transNum).getSecond();
                     }
                     // 如果存在于内存ATT 更新lastLSN, status
-                    // status只要不是RUNNING 就一定可以更新对吧
+                    // 此处可能会加入COMPLETE?
                     else {
                         updateTXNLastLSN(transactionTable.get(transNum), transTable.get(transNum).getSecond());
-                        if (!transTable.get(transNum).getFirst().equals(Transaction.Status.RUNNING)) {
+                        if (transactionStatusBefore(transactionTable.get(transNum).transaction.getStatus()
+                                ,Transaction.Status.RUNNING)) {
                             transactionTable.get(transNum).transaction.setStatus(transTable.get(transNum).getFirst());
+                        }
+                        if (transactionTable.get(transNum).transaction.getStatus().equals(Transaction.Status.ABORTING)) {
+                            transactionTable.get(transNum).transaction.setStatus(Transaction.Status.RECOVERY_ABORTING);
                         }
                     }
                 }
@@ -727,7 +752,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
             updateATTAndDPT(cur, transactionTable.get(transNum), endedTransactions);
         }
         // 此时已经扫描完了全部的log
-        // 遍历一下ATT 将COMMITTING 的事务结束, RUNNING的事务设为abort
+        // 遍历一下ATT 将COMMITTING 的事务结束,ABORTING RUNNING的事务设为RECOVERY_ABORTING
         for (long transNum : transactionTable.keySet()) {
             TransactionTableEntry t = transactionTable.get(transNum);
             //RUNNING -> RECOVERY_ABORTING
@@ -741,9 +766,13 @@ public class ARIESRecoveryManager implements RecoveryManager {
                 // 需要手动clean up()
                 t.transaction.cleanup();
                 t.transaction.setStatus(Transaction.Status.COMPLETE);
-                this.transactionTable.remove(transNum);
                 LogRecord logRecorde = new EndTransactionLogRecord(transNum, t.lastLSN);
                 t.lastLSN = logManager.appendToLog(logRecorde);
+                this.transactionTable.remove(transNum);
+            }
+            // ABORTING -> RECOVERY_ABORTING
+            else if (t.transaction.getStatus().equals(Transaction.Status.ABORTING)) {
+                t.transaction.setStatus(Transaction.Status.RECOVERY_ABORTING);
             }
         }
     }
@@ -822,7 +851,6 @@ public class ARIESRecoveryManager implements RecoveryManager {
     // 用优先队列进行多源bfs 每次取出最大的LSN 往上走一格 (undo一条操作前记得写CLR日志
     void restartUndo() {
         // TODO(proj5): implement
-        // 官方给了比较器的实现,first是LSN, second是logRecord
         Queue<Pair<Long, LogRecord>> q = new PriorityQueue<>(new PairFirstReverseComparator<>());
         for (long id : transactionTable.keySet()) {
             if (transactionTable.get(id).transaction.getStatus().equals(Transaction.Status.RECOVERY_ABORTING)) {
@@ -834,13 +862,14 @@ public class ARIESRecoveryManager implements RecoveryManager {
         while (q.size() > 0) {
             Pair<Long, LogRecord> pk = q.poll();
             LogRecord cur = pk.getSecond();
-            System.out.println("pop :" + cur.toString());
             assert(cur.getTransNum().isPresent());
             long lastLSN = transactionTable.get(cur.getTransNum().get()).lastLSN;
             // UPDATE record, undo一下
             if (cur.isUndoable()) {
                 LogRecord clr = cur.undo(lastLSN);
                 transactionTable.get(cur.getTransNum().get()).lastLSN = logManager.appendToLog(clr);
+                // WA点, 写一条CLR后记得更新lastLSN 不然后面写END_TXN的时候会出错
+                lastLSN = transactionTable.get(cur.getTransNum().get()).lastLSN;
                 clr.redo(this, diskSpaceManager, bufferManager);
             }
             // 不是UPDATE, 如果undoNextLSN存在 就是CLR
