@@ -308,7 +308,7 @@ public class LockContext {
      * lock.
      */
     // 祖先节点有S / X / SIX 对应返回S / X / S
-    //
+    // 取到祖先路径上最高级的锁
     public LockType getEffectiveLockType(TransactionContext transaction) {
         if (transaction == null) return LockType.NL;
         // TODO(proj4_part2): implement
@@ -316,6 +316,7 @@ public class LockContext {
         LockType lockType = lockman.getLockType(transaction, this.getResourceName());
         while (t != null) {
             LockType t2 = t.getEffectiveLockType(transaction);
+            // 更高级 那么更换
             if (LockType.substitutable(t2, lockType)) {
                 lockType = t.getEffectiveLockType(transaction);
             }
