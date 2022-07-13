@@ -848,7 +848,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
      * - if the new LSN is 0, clean up the transaction, set the status to complete,
      *   and remove from transaction table.
      */
-    // 用优先队列进行多源bfs 每次取出最大的LSN 往上走一格 (undo一条操作前记得写CLR日志
+    // 用优先队列进行回溯 每次取出最大的LSN 往上走一格 (undo一条操作前记得写CLR日志
     void restartUndo() {
         // TODO(proj5): implement
         Queue<Pair<Long, LogRecord>> q = new PriorityQueue<>(new PairFirstReverseComparator<>());
