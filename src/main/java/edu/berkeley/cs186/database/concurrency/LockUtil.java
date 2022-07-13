@@ -92,7 +92,8 @@ public class LockUtil {
     //lockContext 获取requestType (IS/IX)
     private static void getIntendLock(TransactionContext transaction,
                                       LockContext lockContext, LockType requestType) {
-        if (lockContext == null) return ;
+        if (lockContext == null) return;
+        assert (requestType.isIntent());
         LockType explicitLockType = lockContext.getExplicitLockType(transaction);
         // 原先的锁不可能是X SIX IX, 因为X一定可以赋予隐式锁, SIX IX可以作为意向锁
         // 所以explicitLockType只能是S IS NL中的一个

@@ -307,14 +307,18 @@ public class LockContext {
      * level) or explicitly. Returns NL if there is no explicit nor implicit
      * lock.
      */
-    //祖先节点有S / X / SIX 对应返回S / X / S
+    // 祖先节点有S / X / SIX 对应返回S / X / S
+    //
     public LockType getEffectiveLockType(TransactionContext transaction) {
         if (transaction == null) return LockType.NL;
         // TODO(proj4_part2): implement
         LockContext t = this.parentContext();
         LockType lockType = lockman.getLockType(transaction, this.getResourceName());
-        while (t != null && lockType == LockType.NL) {
-            lockType = t.getEffectiveLockType(transaction);
+        while (t != null) {
+            LockType t2 = t.getEffectiveLockType(transaction);
+            if (LockType.substitutable(t2, lockType)) {
+                lockType = t.getEffectiveLockType(transaction);
+            }
             if (lockType.equals(LockType.IS) || lockType.equals(LockType.IX)) {
                 lockType = LockType.NL;
             }

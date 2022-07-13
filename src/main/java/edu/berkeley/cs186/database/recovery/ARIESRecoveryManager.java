@@ -78,6 +78,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
      * @param transaction new transaction
      */
     @Override
+    // 开始一个事务 放入ATT中
     public synchronized void startTransaction(Transaction transaction) {
         this.transactionTable.put(transaction.getTransNum(), new TransactionTableEntry(transaction));
     }
@@ -255,6 +256,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
      * @return LSN of last record written to log
      */
     @Override
+    // write操作前需要调用, 作用是加一条UPDATE日志
     // 写在buffer page中 所以日志不需要刷盘
     public long logPageWrite(long transNum, long pageNum, short pageOffset, byte[] before,
                              byte[] after) {

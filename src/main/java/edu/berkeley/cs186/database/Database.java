@@ -935,7 +935,7 @@ public class Database implements AutoCloseable {
 //                此时2PL的phrase阶段已经结束 要开始以一定的顺序释放锁
 //                获取当前事务所有的锁, LockContext中numChildren==0就是叶子, 从底层向上bfs
                 Deque<LockContext> q = new ArrayDeque<>();
-                List<Lock> locks = lockManager.getLocks(getTransaction());
+                List<Lock> locks = lockManager.getLocks(this);
                 for (Lock lock : locks) {
                     ResourceName name = lock.name;
                     LockContext lc = LockContext.fromResourceName(lockManager, name);
