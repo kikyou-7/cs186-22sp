@@ -521,7 +521,8 @@ public class ARIESRecoveryManager implements RecoveryManager {
             chkptTxnTable.put(id, t);
             ATTEntries++;
         }
-        // 此时 要么cnt==0, 要么还有ATT DPT条目剩余 没有刷盘
+        // 此时 要么cnt==0, 要么还有ATT DPT条目剩余
+        // 所以我们要进行最后一次日志刷盘
         LogRecord endRecord = new EndCheckpointLogRecord(chkptDPT, chkptTxnTable);
         logManager.appendToLog(endRecord);
         flushToLSN(endRecord.getLSN());
@@ -584,6 +585,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
     //analysis phase, check the logRecord and update ATT
     private void updateATTAndDPT(LogRecord logRecord, TransactionTableEntry transactionEntry,
                            Set<Long> endedTransactions) {
+        // 更新ATT
         long LSN = logRecord.getLSN();
         updateTXNLastLSN(transactionEntry, LSN);
         // TXN status
@@ -604,6 +606,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
             endedTransactions.add(logRecord.getTransNum().get());
             transactionTable.remove(logRecord.getTransNum().get());
         }
+
         if(logRecord.getPageNum().isPresent()) {
             Long pageNum = logRecord.getPageNum().get();
             if (logRecord.getType().equals(LogType.UPDATE_PAGE) || logRecord.getType().equals(LogType.UNDO_UPDATE_PAGE)) {
@@ -771,6 +774,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
                 LogRecord logRecorde = new EndTransactionLogRecord(transNum, t.lastLSN);
                 t.lastLSN = logManager.appendToLog(logRecorde);
                 this.transactionTable.remove(transNum);
+                endedTransactions.add(transNum);
             }
             // ABORTING -> RECOVERY_ABORTING
             else if (t.transaction.getStatus().equals(Transaction.Status.ABORTING)) {
