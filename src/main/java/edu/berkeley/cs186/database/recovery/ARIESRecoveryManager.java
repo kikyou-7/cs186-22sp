@@ -209,7 +209,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
             currentLSN = currentRecord.getUndoNextLSN().orElse(
                     currentRecord.getPrevLSN().orElse((long) -1));
         }
-        //更新ATT 此时transNum事务 已经全部回滚了,只有BEGIN和一堆CLR日志
+        //更新ATT
         transactionTable.get(transNum).lastLSN = lastRecordLSN;
     }
 
@@ -453,7 +453,6 @@ public class ARIESRecoveryManager implements RecoveryManager {
 
         // TODO(proj5): implement
         rollbackToLSN(transNum, savepointLSN);
-        return;
     }
 
     /**
@@ -758,6 +757,7 @@ public class ARIESRecoveryManager implements RecoveryManager {
         for (long transNum : transactionTable.keySet()) {
             TransactionTableEntry t = transactionTable.get(transNum);
             //RUNNING -> RECOVERY_ABORTING
+            // ABORT log在此处写
             if (t.transaction.getStatus().equals(Transaction.Status.RUNNING)) {
                 LogRecord logRecorde = new AbortTransactionLogRecord(transNum, t.lastLSN);
                 t.lastLSN = logManager.appendToLog(logRecorde);
