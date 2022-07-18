@@ -473,4 +473,6 @@ public class LockManager {
     public synchronized LockContext databaseContext() {
         return context("database");
     }
+
+    // 加入死锁检测, wait-for graph + 拓扑排序判环
 }
