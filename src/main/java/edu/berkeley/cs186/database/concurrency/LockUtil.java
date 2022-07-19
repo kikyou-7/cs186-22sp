@@ -50,6 +50,11 @@ public class LockUtil {
         || LockType.substitutable(effectiveLockType, requestType)) {
             return ;
         }
+        // 检查当前隔离等级, 若为read uncommitted则不加S锁
+        if (Database.DBisolationLevel.equals(IsolationLevel.READ_UNCOMMITTED) && requestType.equals(LockType.S)) {
+            return;
+        }
+
         // 祖先节点中没有足够权限的锁 需要在当前节点挂上requestType锁
         // 当前锁是IX并且申请S, 此时需要变成SIX锁，单独讨论
         if (explicitLockType.equals(LockType.IX) &&

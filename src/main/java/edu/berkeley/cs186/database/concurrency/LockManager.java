@@ -1,5 +1,6 @@
 package edu.berkeley.cs186.database.concurrency;
 
+import edu.berkeley.cs186.database.Transaction;
 import edu.berkeley.cs186.database.TransactionContext;
 
 import java.util.*;
@@ -45,6 +46,17 @@ public class LockManager {
     //source对应的锁的hash表
     private Map<ResourceName, ResourceEntry> resourceEntries = new HashMap<>();
 
+    // wait-for graph 事务只能被一个事务阻塞
+    // 图中的点代表一个被阻塞的事务, 在resource的waitingQueue中挂起了请求
+    // 当事务的请求入队时,将事务加入图中; 出队则从图中删掉
+    HashMap<Long, Long> waitForGraph = new HashMap<>();
+    // 监控死锁的后台线程  在构造方法中创建
+    Thread deadLockChecker;
+    // 监控死锁的后台线程是否正在运作
+    boolean checkIsRunning = false;
+    // 当前活跃的事务
+    private Map<Long, Transaction> runningTransaction = new HashMap<>();
+
     // A ResourceEntry contains the list of locks on a resource, as well as
     // the queue for requests for locks on the resource.
     private class ResourceEntry {
@@ -71,6 +83,16 @@ public class LockManager {
                 }
             }
             return true;
+        }
+        // 返回一个与lockType不兼容的锁
+        public Lock getIncompatibleLock(LockType lockType, long except) {
+            for (Lock lock : locks) {
+                if (lock.transactionNum == except) continue;
+                if (!LockType.compatible(lock.lockType, lockType)) {
+                    return lock;
+                }
+            }
+            throw new IllegalStateException("no Incompatible locks!");
         }
         //维护lock被删除/授予后 事务的hash表
         private void processTransactionLocks(Lock lock, boolean delete) {
@@ -168,8 +190,14 @@ public class LockManager {
                         if (this.locks.contains(lockToRelease)) {
                            this.naiveReleaseLock(lockToRelease);
                         }
+                        Long transNum = lockToRelease.transactionNum;
+                        // 请求被处理后该事务就不被阻塞了, 移出等待图
+                        waitForGraph.remove(transNum);
+                        if (waitForGraph.isEmpty()) {
+                            stopDeadLockChecker();
+                        }
                     }
-                    // 授予锁
+                    // 授予或升级锁
                     grantOrUpdateLock(lockToGranted);
                     waitingQueue.removeFirst();
                     request.transaction.unblock();
@@ -278,6 +306,10 @@ public class LockManager {
                 shouldBlock = true;
                 //将其生成为一个请求并放到队列开头
                 resourceEntry.addToQueue(new LockRequest(transaction, lock, releasedLocks), true);
+                // 只要有进队 就要维护waitForGraph
+                waitForGraph.put(transNum,
+                        resourceEntry.getIncompatibleLock(lockType, transNum).transactionNum);
+                if (!checkIsRunning) startDeadLockChecker();
             }
             if (shouldBlock) {
                 transaction.prepareBlock();
@@ -325,6 +357,10 @@ public class LockManager {
             else {
                 shouldBlock = true;
                 resourceEntry.addToQueue(new LockRequest(transaction, lock), false);
+                // 只要有进队 就维护waitForGraph
+                waitForGraph.put(transNum,
+                        resourceEntry.getIncompatibleLock(lockType, transNum).transactionNum);
+                if (!checkIsRunning) startDeadLockChecker();
             }
             if (shouldBlock) {
                 transaction.prepareBlock();
@@ -419,6 +455,10 @@ public class LockManager {
             else {
                 shouldBlock = true;
                 resourceEntry.addToQueue(new LockRequest(transaction, lock), true);
+                // 更新waits-for信息
+                waitForGraph.put(transNum,
+                        resourceEntry.getIncompatibleLock(newLockType, transNum).transactionNum);
+                if (!checkIsRunning) startDeadLockChecker();
             }
             if (shouldBlock) {
                 transaction.prepareBlock();
@@ -449,7 +489,7 @@ public class LockManager {
     /**
      * Returns the list of locks held by `transaction`, in order of acquisition.
      */
-    //创建一个新的List 不能用来修改transactionLocks
+    //创建一个新的List 不能用来修改transactionLocks, 小心wa点
     public synchronized List<Lock> getLocks(TransactionContext transaction) {
         return new ArrayList<>(transactionLocks.getOrDefault(transaction.getTransNum(),
                 Collections.emptyList()));
@@ -474,5 +514,81 @@ public class LockManager {
         return context("database");
     }
 
-    // 加入死锁检测, wait-for graph + 拓扑排序判环
+    /** register()发生在DataBase.java 事务开始时, lock manager需要追踪活跃的事务
+     */
+    public synchronized void register(Transaction transaction) {
+        runningTransaction.put(transaction.getTransNum(), transaction);
+    }
+
+    public synchronized void deregister(Transaction transaction) {
+        runningTransaction.remove(transaction.getTransNum());
+    }
+
+    /** 加入死锁检测, wait-for graph + 拓扑排序判环
+     */
+    public LockManager() {
+        // 后台线程检测死锁
+        deadLockChecker = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (!Thread.currentThread().isInterrupted()) {
+                    // 每间隔1s检测
+                    try {
+                        Thread.sleep(10000);
+                    } catch (InterruptedException e) {
+                        // 休眠时被打断则再次抛出异常
+                        Thread.currentThread().interrupt();
+                    }
+                    deadLockCheck();
+                }
+            }
+        });
+    }
+    public void startDeadLockChecker() {
+        checkIsRunning = true;
+        deadLockChecker.start();
+    }
+
+    public void stopDeadLockChecker() {
+        checkIsRunning = false;
+        deadLockChecker.interrupt();
+    }
+    private void deadLockCheck () {
+        // 检查waits for关系中是否存在环
+        // 统计节点的入度
+        Map <Long, Long> ins = new HashMap<>();
+        synchronized (this) {
+            for (Long tid : waitForGraph.keySet()) {
+                ins.putIfAbsent(tid, 0L);
+            }
+            for (Long tid : waitForGraph.values()) {
+                ins.putIfAbsent(tid, 0L);
+                ins.put(tid, ins.get(tid) + 1);
+            }
+        }
+
+        // 拓扑排序
+        while (ins.size() > 0) {
+            // 找到一个没有入度的点了, 说明此时不存在环
+            boolean found = false;
+            for (Long tid : ins.keySet()) {
+                if (ins.get(tid) == 0) {
+                    found = true;
+                    ins.remove(tid);
+                    Long waited = waitForGraph.get(tid);
+                    // 删掉那个点后, 更新出点 出点的入度-1
+                    if(ins.containsKey(waited)) ins.put(waited, ins.get(waited) - 1);
+                }
+            }
+            if (!found) break; // 找到环
+        }
+        // 对于找到死锁的情况
+        if (ins.size() != 0) {
+            System.out.println("found dead lock: " + ins.keySet());
+            // 回滚最年轻的事务
+            Long tid = Collections.max(ins.keySet());
+            runningTransaction.get(tid).rollback();
+            runningTransaction.remove(tid);
+        }
+    }
 }

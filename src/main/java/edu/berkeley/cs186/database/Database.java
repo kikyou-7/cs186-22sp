@@ -111,6 +111,9 @@ public class Database implements AutoCloseable {
     // Names of tables loaded for demo
     private ArrayList<String> demoTables = new ArrayList<>();
 
+    // 用一个全局静态变量来记录当前数据库的隔离等级, 默认为可重复读 (RR)
+    public static IsolationLevel DBisolationLevel = IsolationLevel.REPEATABLE_READ;
+
     /**
      * Creates a new database with:
      * - Default buffer size
@@ -212,6 +215,19 @@ public class Database implements AutoCloseable {
             this.loadMetadataTables();
         }
         initTransaction.commit();
+    }
+
+    // 创建数据库时指定数据库的隔离等级
+    public Database(String fileDir, int numMemoryPages, LockManager lockManager,
+                    EvictionPolicy policy, boolean useRecoveryManager, IsolationLevel isolationLevel) {
+        this(fileDir, numMemoryPages, lockManager, policy, useRecoveryManager);
+        DBisolationLevel = isolationLevel;
+    }
+
+    // 修改数据库的默认隔离等级
+    public static IsolationLevel setDBIsolationLevel (IsolationLevel isolationLevel) {
+        DBisolationLevel = isolationLevel;
+        return DBisolationLevel;
     }
 
     private boolean setupDirectory(String fileDir) {
@@ -581,6 +597,8 @@ public class Database implements AutoCloseable {
         this.recoveryManager.startTransaction(t);
         ++this.numTransactions;
         TransactionContext.setTransaction(t.getTransactionContext());
+        // 注册到LockManager  (处理死锁
+        lockManager.register(t);
         return t;
     }
 
@@ -1047,6 +1065,8 @@ public class Database implements AutoCloseable {
 
             transactionContext.close();
             activeTransactions.arriveAndDeregister();
+            // 事务结束
+            lockManager.deregister(this);
         }
 
         @Override
