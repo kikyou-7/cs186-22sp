@@ -82,8 +82,8 @@ class InnerNode extends BPlusNode {
     @Override
     public LeafNode get(DataBox key) {
         // TODO(proj2): implement
-        //要找到key在哪个孩子节点, 找有几个entry小于key, 然后得到指针
-        int index = numLessThanEqual(key, keys);//小于key的entry数目
+        //要找到key在哪个孩子节点, 找有几个entry小于等于key, 然后得到指针
+        int index = numLessThanEqual(key, keys);//小于等于key的entry数目
         BPlusNode child = getChild(index);//getChild() 返回孩子节点
         return child.get(key);
     }

@@ -112,7 +112,7 @@ public class Database implements AutoCloseable {
     private ArrayList<String> demoTables = new ArrayList<>();
 
     // 用一个全局静态变量来记录当前数据库的隔离等级, 默认为可重复读 (RR)
-    public static IsolationLevel DBisolationLevel = IsolationLevel.REPEATABLE_READ;
+    //public static IsolationLevel DBisolationLevel = IsolationLevel.REPEATABLE_READ;
 
     /**
      * Creates a new database with:
@@ -218,17 +218,17 @@ public class Database implements AutoCloseable {
     }
 
     // 创建数据库时指定数据库的隔离等级
-    public Database(String fileDir, int numMemoryPages, LockManager lockManager,
-                    EvictionPolicy policy, boolean useRecoveryManager, IsolationLevel isolationLevel) {
-        this(fileDir, numMemoryPages, lockManager, policy, useRecoveryManager);
-        DBisolationLevel = isolationLevel;
-    }
-
-    // 修改数据库的默认隔离等级
-    public static IsolationLevel setDBIsolationLevel (IsolationLevel isolationLevel) {
-        DBisolationLevel = isolationLevel;
-        return DBisolationLevel;
-    }
+//    public Database(String fileDir, int numMemoryPages, LockManager lockManager,
+//                    EvictionPolicy policy, boolean useRecoveryManager, IsolationLevel isolationLevel) {
+//        this(fileDir, numMemoryPages, lockManager, policy, useRecoveryManager);
+//        DBisolationLevel = isolationLevel;
+//    }
+//
+//    // 修改数据库的默认隔离等级
+//    public static IsolationLevel setDBIsolationLevel (IsolationLevel isolationLevel) {
+//        DBisolationLevel = isolationLevel;
+//        return DBisolationLevel;
+//    }
 
     private boolean setupDirectory(String fileDir) {
         File dir = new File(fileDir);
